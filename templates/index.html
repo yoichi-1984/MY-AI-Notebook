@@ -1001,8 +1001,8 @@
             });
         }
 
-        // 手動保存
-        async function saveNoteChanges() {
+        // 手動保存 (引数でトースト非表示に対応)
+        async function saveNoteChanges(showToastFlag = true) {
             if (!currentNoteId) return;
 
             const title = document.getElementById('detailTitle').value;
@@ -1028,14 +1028,20 @@
                 });
                 
                 if (res.ok) {
-                    showToast("変更を保存しました (ベクトル再計算中)", "success");
+                    if (showToastFlag) {
+                        showToast("変更を保存しました (ベクトル再計算中)", "success");
+                    }
                     renderTagsList(ai_tags);
                     await fetchNotes();
                 } else {
-                    showToast("保存に失敗しました", "error");
+                    if (showToastFlag) {
+                        showToast("保存に失敗しました", "error");
+                    }
                 }
             } catch (err) {
-                showToast("通信エラーが発生しました", "error");
+                if (showToastFlag) {
+                    showToast("通信エラーが発生しました", "error");
+                }
             }
         }
 
@@ -1327,6 +1333,9 @@
         // ノートへの画像アップロード処理 (ノンブロッキング)
         async function uploadImage(file) {
             if (!currentNoteId) return;
+
+            // 画像追加前に、現在画面に入力されているタイトルや本文をサイレント保存する
+            await saveNoteChanges(false);
 
             const formData = new FormData();
             formData.append("image", file);
