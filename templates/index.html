@@ -1201,6 +1201,9 @@
             // クリップボードからの Ctrl+V ペースト監視
             document.addEventListener('paste', async (event) => {
                 const activeTag = document.activeElement.tagName;
+                console.log("Paste event triggered. Active element:", activeTag);
+                showToast(`ペースト検知 (フォーカス: ${activeTag})`, "info");
+
                 if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') {
                     // 入力欄にフォーカスがあるときは通常のテキストペーストを邪魔しない
                     return;
@@ -1214,7 +1217,9 @@
                 const items = event.clipboardData.items;
                 let imageFile = null;
 
+                console.log("Clipboard items length:", items.length);
                 for (let item of items) {
+                    console.log(`Clipboard item type: ${item.type}, kind: ${item.kind}`);
                     if (item.type.indexOf("image") !== -1) {
                         imageFile = item.getAsFile();
                         break;
