@@ -449,12 +449,48 @@
             lucide.createIcons();
             
             // ショートカットキー設定
-            document.addEventListener('keydown', (e) => {
+            document.addEventListener('keydown', async (e) => {
                 // Ctrl + S で保存
                 if ((e.ctrlKey || e.metaKey) && e.key === 's') {
                     if (currentNoteId && document.getElementById('detailView').classList.contains('hidden') === false) {
                         e.preventDefault();
                         saveNoteChanges();
+                    }
+                }
+
+                // Ctrl + V のフォールバック処理 (通常の paste イベントがブロック・発火しない環境用)
+                if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+                    const activeTag = document.activeElement.tagName;
+                    if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') {
+                        // 入力欄にフォーカスがあるときは通常のテキストペーストを邪魔しない
+                        return;
+                    }
+
+                    try {
+                        // クリップボードからデータを非同期で読み取る (初回のみブラウザでアクセス確認が出ます)
+                        if (navigator.clipboard && navigator.clipboard.read) {
+                            const clipboardItems = await navigator.clipboard.read();
+                            let imageFile = null;
+
+                            for (const item of clipboardItems) {
+                                for (const type of item.types) {
+                                    if (type.indexOf("image") !== -1) {
+                                        const blob = await item.getType(type);
+                                        imageFile = new File([blob], "clipboard_image.png", { type: type });
+                                        break;
+                                    }
+                                }
+                                if (imageFile) break;
+                            }
+
+                            if (imageFile) {
+                                e.preventDefault();
+                                console.log("Image retrieved via keydown clipboard fallback:", imageFile.name);
+                                await uploadImage(imageFile);
+                            }
+                        }
+                    } catch (err) {
+                        console.warn("Clipboard fallback read failed or not permitted:", err);
                     }
                 }
             });
