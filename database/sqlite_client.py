@@ -98,7 +98,7 @@ def init_db():
                     
                     # デフォルト設定の初期登録
                     default_settings = {
-                        "thinking_level": "standard",
+                        "thinking_level": "medium",
                         "model_name": "gemini-3.5-flash",
                         "confidence_threshold": "0.7",
                         "rag_limit": "5"
@@ -143,6 +143,19 @@ def init_db():
                 cursor.execute("INSERT INTO folders (id, name, parent_id) VALUES ('inbox', '📥 仮置き（自動整理）', NULL)")
             else:
                 cursor.execute("UPDATE folders SET name = '📥 仮置き（自動整理）' WHERE id = 'inbox'")
+                
+            # 既存の thinking_level の値の正規化 (standard/creative -> medium)
+            cursor.execute("SELECT value FROM settings WHERE key = 'thinking_level'")
+            row = cursor.fetchone()
+            if row:
+                val = row["value"]
+                if val not in ["minimal", "low", "medium", "high"]:
+                    new_val = "medium"
+                    if val == "high":
+                        new_val = "high"
+                    elif val == "low":
+                        new_val = "low"
+                    cursor.execute("UPDATE settings SET value = ? WHERE key = 'thinking_level'", (new_val,))
             conn.commit()
 
 def create_folder(name: str, parent_id: str = None) -> str:
@@ -186,6 +199,43 @@ def update_note_metadata(note_id: str, title: str, ai_ocr_text: str, ai_summary:
             WHERE id = ?
             """,
             (title, ai_ocr_text, ai_summary, ai_tags, parent_folder_id, status, now, note_id)
+        )
+        conn.commit()
+
+def update_note_metadata_optimistic(note_id: str, title: str, ai_ocr_text: str, ai_summary: str, ai_tags: str, parent_folder_id: str, status: str, expected_updated_at: str) -> bool:
+    now = datetime.datetime.now().isoformat()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE notes
+            SET title = ?, ai_ocr_text = ?, ai_summary = ?, ai_tags = ?, parent_folder_id = ?, status = ?, updated_at = ?
+            WHERE id = ? AND updated_at = ?
+            """,
+            (title, ai_ocr_text, ai_summary, ai_tags, parent_folder_id, status, now, note_id, expected_updated_at)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+def update_note_metadata_merge(note_id: str, title: str, ai_ocr_text: str, ai_summary: str, ai_tags: str, parent_folder_id: str, status: str) -> None:
+    now = datetime.datetime.now().isoformat()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT title FROM notes WHERE id = ?", (note_id,))
+        row = cursor.fetchone()
+        current_title = row["title"] if row else None
+        
+        final_title = current_title
+        if not current_title or current_title == "無題 of ノート" or current_title == "無題のノート" or current_title.strip() == "":
+            final_title = title if title else "無題のノート"
+
+        cursor.execute(
+            """
+            UPDATE notes
+            SET title = ?, ai_ocr_text = ?, ai_summary = ?, ai_tags = ?, parent_folder_id = ?, status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (final_title, ai_ocr_text, ai_summary, ai_tags, parent_folder_id, status, now, note_id)
         )
         conn.commit()
 

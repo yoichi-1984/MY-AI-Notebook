@@ -226,12 +226,21 @@ def update_note(note_id: str, note_data: NoteUpdate, background_tasks: Backgroun
     is_inbox = note_data.parent_folder_id == "inbox"
     status_str = "processing" if is_inbox else "completed"
         
+    # AI要約とタグが空の場合は、DBの既存値を維持するようにマージ
+    ai_summary = note_data.ai_summary
+    if (not ai_summary or ai_summary.strip() == "") and note.get("ai_summary"):
+        ai_summary = note["ai_summary"]
+        
+    ai_tags = note_data.ai_tags
+    if (not ai_tags or ai_tags.strip() == "") and note.get("ai_tags"):
+        ai_tags = note["ai_tags"]
+
     sqlite_client.update_note_metadata(
         note_id=note_id,
         title=note_data.title,
         ai_ocr_text=note.get("ai_ocr_text") or "", # OCRは編集非対称
-        ai_summary=note_data.ai_summary,
-        ai_tags=note_data.ai_tags,
+        ai_summary=ai_summary,
+        ai_tags=ai_tags,
         parent_folder_id=note_data.parent_folder_id,
         status=status_str
     )

@@ -51,17 +51,23 @@ async def async_pipeline_workflow(note_id: str, skip_classification: bool = Fals
                 async with aiofiles.open(full_image_path, "rb") as f:
                     image_bytes = await f.read()
 
+        # Geminiに投げる直前に最新のノート情報(raw_text, updated_at)を再取得
+        latest_note = sqlite_client.get_note(note_id)
+        if not latest_note:
+            print(f"Error: Note {note_id} not found in SQLite just before Gemini call.")
+            return
+
         # 3. Geminiによる解析・構造化
         structured_data = ai_agent.analyze_and_structure_with_gemini(
             image_bytes=image_bytes,
-            raw_text=note["raw_text"],
+            raw_text=latest_note["raw_text"],
             folder_list_string=folder_list_str,
             existing_titles_string=existing_titles_str,
             rules_string=rules_str
         )
 
         # 4. 「迷い・ゆらぎ」の判定 ＆ 自動仕分け制御
-        suggested_folder_id = note["parent_folder_id"]
+        suggested_folder_id = latest_note["parent_folder_id"]
         status = "completed"
 
         if not skip_classification:
@@ -78,13 +84,13 @@ async def async_pipeline_workflow(note_id: str, skip_classification: bool = Fals
             if structured_data.confidence_score < confidence_threshold or structured_data.suggested_folder_id == "unclassified" or not is_valid_folder:
                 # 仕分け保留 (pending_review)
                 title = structured_data.refined_title if structured_data.refined_title else "無題のノート"
-                sqlite_client.update_note_metadata(
+                sqlite_client.update_note_metadata_merge(
                     note_id=note_id,
                     title=title,
                     ai_ocr_text=structured_data.ocr_raw_text,
                     ai_summary=structured_data.clean_summary,
                     ai_tags=",".join(structured_data.tags),
-                    parent_folder_id=note["parent_folder_id"], # 元のフォルダ（通常は inbox）
+                    parent_folder_id=latest_note["parent_folder_id"], # 元のフォルダ（通常は inbox）
                     status="pending_review"
                 )
                 # WebSocketプッシュ送信
@@ -92,7 +98,7 @@ async def async_pipeline_workflow(note_id: str, skip_classification: bool = Fals
                     "type": "pending_review",
                     "note_id": note_id,
                     "title": title,
-                    "folder_id": note["parent_folder_id"],
+                    "folder_id": latest_note["parent_folder_id"],
                     "confidence_score": structured_data.confidence_score
                 })
                 print(f"Note {note_id} is pending review (Confidence: {structured_data.confidence_score}).")
@@ -101,15 +107,14 @@ async def async_pipeline_workflow(note_id: str, skip_classification: bool = Fals
                 suggested_folder_id = structured_data.suggested_folder_id
 
         # 5. 通常ルート：自動仕分け成功（またはスキップ）
-        current_title = note.get("title")
+        current_title = latest_note.get("title")
         if not current_title or current_title == "無題のノート" or current_title.strip() == "":
             title = structured_data.refined_title if structured_data.refined_title else "無題のノート"
         else:
             title = current_title
         tags_str = ",".join(structured_data.tags)
 
-        # SQLite 更新
-        sqlite_client.update_note_metadata(
+        sqlite_client.update_note_metadata_merge(
             note_id=note_id,
             title=title,
             ai_ocr_text=structured_data.ocr_raw_text,
@@ -209,8 +214,7 @@ async def update_rules_with_feedback(note_id: str, correct_folder_id: str, reaso
             """
             try:
                 response = ai_agent.generate_content_with_fallback(
-                    contents=prompt,
-                    temperature=0.3
+                    contents=prompt
                 )
                 new_rules = response.text
             except Exception as e:
@@ -301,7 +305,13 @@ async def process_new_image_workflow(note_id: str, image_id: str):
         merged_ocr_text = "\n\n".join(all_ocr_texts)
 
         # 5. ノート全体の再構造化 (要約・タグ・タイトル)
-        if note.get("parent_folder_id") == "inbox":
+        # 最新のノート情報(raw_text, updated_at)を再取得
+        latest_note = sqlite_client.get_note(note_id)
+        if not latest_note:
+            print(f"Error: Note {note_id} not found in SQLite just before summary generation.")
+            return
+
+        if latest_note.get("parent_folder_id") == "inbox":
             # 仮置き（自動整理）フォルダ所属の場合は、画像OCR完了時点で自動仕分けパイプラインへ移譲
             await async_pipeline_workflow(note_id)
             return
@@ -310,25 +320,25 @@ async def process_new_image_workflow(note_id: str, image_id: str):
         existing_titles_str = ", ".join(recent_titles) if recent_titles else "（まだ既存タイトルはありません）"
 
         summary_data = ai_agent.generate_summary_and_tags_with_gemini(
-            raw_text=note["raw_text"],
+            raw_text=latest_note["raw_text"],
             merged_ocr_text=merged_ocr_text,
             existing_titles_string=existing_titles_str
         )
 
-        title = note.get("title")
+        title = latest_note.get("title")
         if not title or title == "無題のノート" or title.strip() == "":
             title = summary_data.refined_title if summary_data.refined_title else "無題のノート"
 
         tags_str = ",".join(summary_data.tags)
 
         # SQLite 更新 (ノート全体)
-        sqlite_client.update_note_metadata(
+        sqlite_client.update_note_metadata_merge(
             note_id=note_id,
             title=title,
             ai_ocr_text=merged_ocr_text,
             ai_summary=summary_data.clean_summary,
             ai_tags=tags_str,
-            parent_folder_id=note["parent_folder_id"],
+            parent_folder_id=latest_note["parent_folder_id"],
             status="completed"
         )
 
@@ -348,7 +358,7 @@ async def process_new_image_workflow(note_id: str, image_id: str):
             "type": "completed",
             "note_id": note_id,
             "title": title,
-            "folder_id": note["parent_folder_id"],
+            "folder_id": latest_note["parent_folder_id"],
             "message": "画像の追加とAI解析が完了しました。"
         })
         print(f"Successfully processed new image {image_id} for note {note_id}")

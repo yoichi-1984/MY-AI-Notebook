@@ -74,11 +74,10 @@ def convert_pydantic_to_gemini_schema(pydantic_model):
         
     return clean_schema(schema)
 
-def generate_content_via_rest(contents_list, model_name="gemini-3.5-flash", response_schema=None, system_instruction=None, temperature=0.2) -> str:
+def generate_content_via_rest(contents_list, model_name="gemini-3.5-flash", response_schema=None, system_instruction=None, thinking_level=None) -> str:
     """
     GOOGLE_APPLICATION_CREDENTIALS (env/gemini.json) を使用して、
     Google AI Studio REST API を OAuth2 認証で直接呼び出します。
-    (SDKの認証バグを回避し、サービスアカウント認証による呼び出しを100%保証します)
     """
     from google.oauth2 import service_account
     from google.auth.transport.requests import Request as AuthRequest
@@ -87,7 +86,6 @@ def generate_content_via_rest(contents_list, model_name="gemini-3.5-flash", resp
     if not json_path or not os.path.exists(json_path):
         raise ValueError("Credentials file not found.")
 
-    # 1. サービスアカウントから OAuth2 アクセストークンを生成
     creds = service_account.Credentials.from_service_account_file(
         json_path,
         scopes=["https://www.googleapis.com/auth/generative-language"]
@@ -95,7 +93,6 @@ def generate_content_via_rest(contents_list, model_name="gemini-3.5-flash", resp
     creds.refresh(AuthRequest())
     token = creds.token
 
-    # 2. リクエスト URL の決定 (指定されたモデル名を最優先し、エラー時に 2.5-flash -> 1.5-flash へフォールバック)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
 
     headers = {
@@ -103,7 +100,6 @@ def generate_content_via_rest(contents_list, model_name="gemini-3.5-flash", resp
         "Content-Type": "application/json"
     }
 
-    # 3. リクエストボディの構築
     parts = []
     for content in contents_list:
         if isinstance(content, str):
@@ -115,111 +111,73 @@ def generate_content_via_rest(contents_list, model_name="gemini-3.5-flash", resp
         "contents": [{"parts": parts}]
     }
 
-    generation_config = {"temperature": temperature}
+    generation_config = {}
     if response_schema:
         generation_config["responseMimeType"] = "application/json"
         generation_config["responseSchema"] = convert_pydantic_to_gemini_schema(response_schema)
         
+    if thinking_level:
+        generation_config["thinkingConfig"] = {
+            "thinkingLevel": thinking_level.upper()
+        }
+
     if system_instruction:
         body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 
     body["generationConfig"] = generation_config
 
-    # 4. APIコールの実行とフォールバック
     try:
         res = requests.post(url, headers=headers, json=body, timeout=30)
-        if res.status_code == 404 or res.status_code == 400:
-            print(f"Model {model_name} failed with status {res.status_code}. Retrying with gemini-2.5-flash...")
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-            res = requests.post(url, headers=headers, json=body, timeout=30)
-            if res.status_code == 404 or res.status_code == 400:
-                print(f"Model gemini-2.5-flash failed with status {res.status_code}. Retrying with gemini-1.5-flash...")
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-                res = requests.post(url, headers=headers, json=body, timeout=30)
-            
         res.raise_for_status()
         res_json = res.json()
-        
-        # テキストの抽出
-        text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
-        return text_content
+        return res_json["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
         print(f"REST API call failed: {e}")
         raise e
 
-def generate_content_with_fallback(contents, response_schema=None, system_instruction=None, temperature=0.2):
+def generate_content_with_fallback(contents, response_schema=None, system_instruction=None):
     """
-    認証情報の種類に応じて、Vertex AI, OAuth2 REST API (Gemini API), または SDK APIキーの順でフォールバック呼び出しを行います。
-    もし環境変数に GEMINI_API_KEY が直接指定されている場合は、APIキーでの呼び出しを最優先します。
-    DBの設定 (model_name, thinking_level) に応じて、モデル名、temperature、system_instructionを動的調整します。
+    認証情報の種類に応じて、Vertex AI, OAuth2 REST API (Gemini API), または SDK APIキー の順で呼び出しを行います。
     """
     from google import genai
     from google.genai import types
     from google.oauth2 import service_account
     from database import sqlite_client
 
-    # DBから設定をロード
     db_model_name = sqlite_client.get_setting("model_name", "gemini-3.5-flash")
-    thinking_level = sqlite_client.get_setting("thinking_level", "standard")
+    thinking_level = sqlite_client.get_setting("thinking_level", "medium")
+    if thinking_level not in ["minimal", "low", "medium", "high"]:
+        thinking_level = "medium"
+
     print(f"[AI Agent] Generating content using model {db_model_name} with thinking_level={thinking_level}")
 
-    # thinking_level に基づく temperature と system_instruction の上書き
-    if thinking_level == "high":
-        target_temperature = 0.0
-        thinking_prompt = "論理的に思考し、手順を追って推論してください（Let's think step by step）。"
-        if system_instruction:
-            system_instruction = f"{system_instruction}\n\n{thinking_prompt}"
-        else:
-            system_instruction = thinking_prompt
-    elif thinking_level == "low":
-        target_temperature = 0.4
-    elif thinking_level == "creative":
-        target_temperature = 0.7
-    else:
-        target_temperature = temperature
+    thinking_config = types.ThinkingConfig(thinking_level=thinking_level)
 
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     json_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or GEMINI_JSON_PATH
     errors = []
+
+    config_kwargs = {
+        "thinking_config": thinking_config
+    }
+    if response_schema:
+        config_kwargs["response_mime_type"] = "application/json"
+        config_kwargs["response_schema"] = response_schema
+    if system_instruction:
+        config_kwargs["system_instruction"] = system_instruction
+    config_obj = types.GenerateContentConfig(**config_kwargs)
 
     # 1. APIキーが明示的に設定されている場合は、まず標準 API キーによる呼び出しを最優先する
     if gemini_api_key:
         try:
             print("Attempting generation using standard Gemini API with API key (Prioritized)...")
             client = genai.Client(api_key=gemini_api_key)
-            
-            config_kwargs = {"temperature": target_temperature}
-            if response_schema:
-                config_kwargs["response_mime_type"] = "application/json"
-                config_kwargs["response_schema"] = response_schema
-            if system_instruction:
-                config_kwargs["system_instruction"] = system_instruction
-            config_obj = types.GenerateContentConfig(**config_kwargs)
-
-            try:
-                response = client.models.generate_content(
-                    model=db_model_name,
-                    contents=contents,
-                    config=config_obj,
-                )
-                return response
-            except Exception as model_err:
-                print(f"Gemini API key call with {db_model_name} failed: {model_err}. Retrying with gemini-2.5-flash...")
-                try:
-                    response = client.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=contents,
-                        config=config_obj,
-                    )
-                    return response
-                except Exception as inner_err:
-                    print(f"Gemini API key call with gemini-2.5-flash failed: {inner_err}. Retrying with gemini-1.5-flash...")
-                    response = client.models.generate_content(
-                        model='gemini-1.5-flash',
-                        contents=contents,
-                        config=config_obj,
-                    )
-                    return response
+            response = client.models.generate_content(
+                model=db_model_name,
+                contents=contents,
+                config=config_obj,
+            )
+            return response
         except Exception as e:
             err_msg = f"Standard API Key優先モード失敗: {e}"
             print(err_msg)
@@ -229,7 +187,6 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
     # 2. Google AI Studio REST API 直接呼び出し (サービスアカウントキーが存在する場合の最安定ルート)
     if json_path and os.path.exists(json_path):
         try:
-            # contents をパースして REST 呼び出し用リストにする
             rest_contents = []
             for item in contents if isinstance(contents, list) else [contents]:
                 if isinstance(item, str):
@@ -244,24 +201,19 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
                     })
                 elif isinstance(item, dict) and "inlineData" in item:
                     rest_contents.append(item)
-                    
             text_response = generate_content_via_rest(
                 contents_list=rest_contents,
                 model_name=db_model_name,
                 response_schema=response_schema,
                 system_instruction=system_instruction,
-                temperature=target_temperature
+                thinking_level=thinking_level
             )
-            
-            # SDKの戻り値に近いモックオブジェクトをラップして返す
             class MockResponse:
                 def __init__(self, text, schema=None):
                     self.text = text
                     if schema:
-                        # JSONをPydanticインスタンスに変換
                         import json
                         try:
-                            # マークダウンのコードブロックトリム
                             cleaned_text = text.strip()
                             if cleaned_text.startswith("```"):
                                 lines = cleaned_text.split("\n")
@@ -275,7 +227,6 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
                             self.parsed = None
                     else:
                         self.parsed = None
-                        
             return MockResponse(text_response, response_schema)
         except Exception as e:
             err_msg = f"REST API(サービスアカウント)失敗: {e}"
@@ -297,39 +248,12 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
                 location=VERTEX_LOCATION,
                 credentials=creds
             )
-            
-            config_kwargs = {"temperature": target_temperature}
-            if response_schema:
-                config_kwargs["response_mime_type"] = "application/json"
-                config_kwargs["response_schema"] = response_schema
-            if system_instruction:
-                config_kwargs["system_instruction"] = system_instruction
-            config_obj = types.GenerateContentConfig(**config_kwargs)
-            
-            try:
-                response = client.models.generate_content(
-                    model=db_model_name,
-                    contents=contents,
-                    config=config_obj,
-                )
-                return response
-            except Exception as model_err:
-                print(f"Vertex AI call with {db_model_name} failed: {model_err}. Retrying with gemini-2.5-flash...")
-                try:
-                    response = client.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=contents,
-                        config=config_obj,
-                    )
-                    return response
-                except Exception as inner_err:
-                    print(f"Vertex AI call with gemini-2.5-flash failed: {inner_err}. Retrying with gemini-1.5-flash...")
-                    response = client.models.generate_content(
-                        model='gemini-1.5-flash',
-                        contents=contents,
-                        config=config_obj,
-                    )
-                    return response
+            response = client.models.generate_content(
+                model=db_model_name,
+                contents=contents,
+                config=config_obj,
+            )
+            return response
         except Exception as e:
             err_msg = f"Vertex AI(SDK)失敗: {e}"
             print(err_msg)
@@ -339,40 +263,13 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
     # 4. 通常の Gemini API モード試行 (APIキーによる標準呼び出し)
     try:
         print("Attempting generation using standard Gemini API with API key...")
-        client = genai.Client() # キーを自動でロード
-        
-        config_kwargs = {"temperature": target_temperature}
-        if response_schema:
-            config_kwargs["response_mime_type"] = "application/json"
-            config_kwargs["response_schema"] = response_schema
-        if system_instruction:
-            config_kwargs["system_instruction"] = system_instruction
-        config_obj = types.GenerateContentConfig(**config_kwargs)
-
-        try:
-            response = client.models.generate_content(
-                model=db_model_name,
-                contents=contents,
-                config=config_obj,
-            )
-            return response
-        except Exception as model_err:
-            print(f"Gemini API key call with {db_model_name} failed: {model_err}. Retrying with gemini-2.5-flash...")
-            try:
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=contents,
-                    config=config_obj,
-                )
-                return response
-            except Exception as inner_err:
-                print(f"Gemini API key call with gemini-2.5-flash failed: {inner_err}. Retrying with gemini-1.5-flash...")
-                response = client.models.generate_content(
-                    model='gemini-1.5-flash',
-                    contents=contents,
-                    config=config_obj,
-                )
-                return response
+        client = genai.Client()
+        response = client.models.generate_content(
+            model=db_model_name,
+            contents=contents,
+            config=config_obj,
+        )
+        return response
     except Exception as e:
         err_msg = f"Standard API Keyフォールバック失敗: {e}"
         print(err_msg)
@@ -412,8 +309,7 @@ def ocr_image_with_gemini(image_bytes: bytes) -> str:
     try:
         response = generate_content_with_fallback(
             contents=contents,
-            response_schema=ImageOcrSchema,
-            temperature=0.1
+            response_schema=ImageOcrSchema
         )
         if response and response.parsed:
             return response.parsed.ocr_raw_text
@@ -450,8 +346,7 @@ def generate_summary_and_tags_with_gemini(raw_text: str, merged_ocr_text: str, e
     try:
         response = generate_content_with_fallback(
             contents=prompt,
-            response_schema=NoteSummarySchema,
-            temperature=0.2
+            response_schema=NoteSummarySchema
         )
         if response and response.parsed:
             return response.parsed
@@ -521,8 +416,7 @@ def analyze_and_structure_with_gemini(image_bytes: bytes, raw_text: str, folder_
     try:
         response = generate_content_with_fallback(
             contents=contents,
-            response_schema=NoteStructuringSchema,
-            temperature=0.2
+            response_schema=NoteStructuringSchema
         )
         return response.parsed
     except Exception as e:
@@ -596,8 +490,7 @@ def generate_rag_response(query: str, search_results: list[dict]) -> str:
     try:
         response = generate_content_with_fallback(
             contents=query,
-            system_instruction=system_instruction,
-            temperature=0.3
+            system_instruction=system_instruction
         )
         return response.text
     except Exception as e:
