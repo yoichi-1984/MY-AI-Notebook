@@ -42,6 +42,19 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # Vertex AIではなくAPIキーを
 VERTEX_PROJECT_ID = VERTEX_PROJECT or os.getenv("VERTEX_PROJECT")
 VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "asia-northeast1") # デフォルトリージョン (東京)
 
+# モデルごとの対応リージョン
+# gemini-3.5-flash は asia-northeast1 で動作確認済み
+# gemini-3.1-flash-lite / gemini-3.1-pro は global のみ対応
+_MODEL_LOCATION_MAP = {
+    "gemini-3.5-flash": "asia-northeast1",
+    "gemini-3.1-flash-lite": "global",
+    "gemini-3.1-pro-preview": "global",
+}
+
+def get_vertex_location_for_model(model_name: str) -> str:
+    """モデル名に応じた最適なVertex AIリージョンを返す"""
+    return _MODEL_LOCATION_MAP.get(model_name, VERTEX_LOCATION)
+
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2023-05-15")

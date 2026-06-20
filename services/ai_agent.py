@@ -6,7 +6,7 @@ import httpx
 import requests
 import base64
 from pydantic import BaseModel, Field
-from config import AZURE_OPENAI_API_VERSION, VERTEX_PROJECT_ID, VERTEX_LOCATION, GEMINI_JSON_PATH
+from config import AZURE_OPENAI_API_VERSION, VERTEX_PROJECT_ID, VERTEX_LOCATION, GEMINI_JSON_PATH, get_vertex_location_for_model
 from database import sqlite_client
 
 # プロキシの環境変数がある場合に openai (内部で利用される httpx) が proxies 引数エラーを起こすバグを回避
@@ -137,7 +137,7 @@ def generate_content_via_rest(contents_list, model_name="gemini-3.5-flash", resp
 
 def generate_content_with_fallback(contents, response_schema=None, system_instruction=None):
     """
-    認証情報の種類に応じて、Vertex AI, OAuth2 REST API (Gemini API), または SDK APIキー の順で呼び出しを行います。
+    認証情報の種類に応じて、Vertex AI SDK → REST API → APIキー の順で呼び出しを行います。
     """
     from google import genai
     from google.genai import types
@@ -151,27 +151,46 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
 
     print(f"[AI Agent] Generating content using model {db_model_name} with thinking_level={thinking_level}")
 
-    thinking_config = types.ThinkingConfig(thinking_level=thinking_level)
+    # ThinkingConfig を enum で生成
+    thinking_config = None
+    if hasattr(types, "ThinkingConfig") and hasattr(types, "ThinkingLevel"):
+        try:
+            level_enum = types.ThinkingLevel(thinking_level.upper())
+            thinking_config = types.ThinkingConfig(thinking_level=level_enum)
+        except Exception as e:
+            print(f"[AI Agent] Failed to create ThinkingConfig: {e}")
 
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
     json_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or GEMINI_JSON_PATH
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
     errors = []
 
-    config_kwargs = {
-        "thinking_config": thinking_config
-    }
+    config_kwargs = {}
+    if thinking_config:
+        config_kwargs["thinking_config"] = thinking_config
     if response_schema:
         config_kwargs["response_mime_type"] = "application/json"
         config_kwargs["response_schema"] = response_schema
     if system_instruction:
         config_kwargs["system_instruction"] = system_instruction
+
     config_obj = types.GenerateContentConfig(**config_kwargs)
 
-    # 1. APIキーが明示的に設定されている場合は、まず標準 API キーによる呼び出しを最優先する
-    if gemini_api_key:
+    # 1. Vertex AI SDK（サービスアカウントJSON）- 最優先
+    if json_path and os.path.exists(json_path) and VERTEX_PROJECT_ID:
         try:
-            print("Attempting generation using standard Gemini API with API key (Prioritized)...")
-            client = genai.Client(api_key=gemini_api_key)
+            # モデルに応じた最適リージョンを選択
+            vertex_location = get_vertex_location_for_model(db_model_name)
+            print(f"Attempting generation using Vertex AI SDK (location={vertex_location}) with service account...")
+            creds = service_account.Credentials.from_service_account_file(
+                json_path,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            client = genai.Client(
+                vertexai=True,
+                project=VERTEX_PROJECT_ID,
+                location=vertex_location,
+                credentials=creds
+            )
             response = client.models.generate_content(
                 model=db_model_name,
                 contents=contents,
@@ -179,12 +198,12 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
             )
             return response
         except Exception as e:
-            err_msg = f"Standard API Key優先モード失敗: {e}"
+            err_msg = f"Vertex AI(SDK)失敗: {e}"
             print(err_msg)
             write_debug_log(err_msg)
             errors.append(err_msg)
 
-    # 2. Google AI Studio REST API 直接呼び出し (サービスアカウントキーが存在する場合の最安定ルート)
+    # 2. Google AI Studio REST API（サービスアカウントJSONのOAuth2）
     if json_path and os.path.exists(json_path):
         try:
             rest_contents = []
@@ -234,20 +253,11 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
             write_debug_log(err_msg)
             errors.append(err_msg)
 
-    # 3. Vertex AI (GCP) モード試行
-    if json_path and VERTEX_PROJECT_ID:
+    # 3. APIキー（GEMINI_API_KEY）
+    if gemini_api_key:
         try:
-            print("Attempting generation using Vertex AI with service account...")
-            creds = service_account.Credentials.from_service_account_file(
-                json_path,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-            client = genai.Client(
-                vertexai=True,
-                project=VERTEX_PROJECT_ID,
-                location=VERTEX_LOCATION,
-                credentials=creds
-            )
+            print("Attempting generation using Gemini API key...")
+            client = genai.Client(api_key=gemini_api_key)
             response = client.models.generate_content(
                 model=db_model_name,
                 contents=contents,
@@ -255,27 +265,11 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
             )
             return response
         except Exception as e:
-            err_msg = f"Vertex AI(SDK)失敗: {e}"
+            err_msg = f"APIキー失敗: {e}"
             print(err_msg)
             write_debug_log(err_msg)
             errors.append(err_msg)
 
-    # 4. 通常の Gemini API モード試行 (APIキーによる標準呼び出し)
-    try:
-        print("Attempting generation using standard Gemini API with API key...")
-        client = genai.Client()
-        response = client.models.generate_content(
-            model=db_model_name,
-            contents=contents,
-            config=config_obj,
-        )
-        return response
-    except Exception as e:
-        err_msg = f"Standard API Keyフォールバック失敗: {e}"
-        print(err_msg)
-        write_debug_log(err_msg)
-        errors.append(err_msg)
-        
     error_summary = " / ".join(errors)
     write_debug_log(f"All fallbacks failed. Model: {db_model_name}, Errors: {error_summary}")
     raise RuntimeError(f"すべてのGemini接続フォールバックが失敗しました。詳細 -> " + error_summary)
