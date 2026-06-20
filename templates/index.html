@@ -1,0 +1,1587 @@
+<!DOCTYPE html>
+<html lang="ja" class="h-full dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ローカルナレッジデータベース</title>
+    <!-- Tailwind CSS & Google Fonts & Lucide Icons -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class', // html.darkクラスでダークモード有効化
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f5f3ff',
+                            100: '#ede9fe',
+                            500: '#8b5cf6',
+                            600: '#7c3aed',
+                            700: '#6d28d9',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* カスタムスクロールバーとアニメーション */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .dark ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        .dark ::-webkit-scrollbar-thumb {
+            background: #475569;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #8b5cf6;
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 0, 0, 0.05);
+        }
+        .dark .glass {
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .pulse-border {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { border-color: rgba(139, 92, 246, 0.3); }
+            50% { border-color: rgba(139, 92, 246, 0.8); }
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden bg-white text-slate-800 dark:bg-slate-900 dark:text-slate-100 transition-colors duration-200">
+
+    <!-- ヘッダー -->
+    <header class="flex items-center justify-between px-6 py-4 bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 shrink-0">
+        <div class="flex items-center space-x-3">
+            <div class="p-2 bg-brand-600 rounded-lg text-white">
+                <i data-lucide="brain-circuit" class="w-6 h-6"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-brand-600 to-indigo-500 dark:from-violet-400 dark:to-indigo-300 bg-clip-text text-transparent">
+                    ローカルナレッジデータベース
+                </h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400">AIネイティブ・自動構造化・RAG</p>
+            </div>
+        </div>
+
+        <!-- 検索バー ＆ RAG -->
+        <div class="flex items-center space-x-3 w-1/3">
+            <div class="relative w-full">
+                <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400 dark:text-slate-500">
+                    <i data-lucide="search" class="w-4 h-4"></i>
+                </span>
+                <input id="searchInput" type="text" placeholder="ハイブリッド検索 ＆ AIに質問する..." 
+                       class="w-full pl-10 pr-4 py-2 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm text-slate-800 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition">
+            </div>
+            <button onclick="performSearch()" class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-medium flex items-center space-x-1 shrink-0 transition shadow-lg shadow-brand-500/20">
+                <i data-lucide="sparkles" class="w-4 h-4"></i>
+                <span>AI質問</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- 3カラムメイン領域 -->
+    <div class="flex-1 flex overflow-hidden">
+        
+        <!-- 左カラム: フォルダ階層 (20%) -->
+        <aside class="w-1/5 bg-slate-50 dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden shrink-0">
+            <!-- スクロール可能なフォルダエリア -->
+            <div class="flex-1 overflow-y-auto">
+                <div class="p-4 flex items-center justify-between border-b border-slate-200 dark:border-slate-900">
+                    <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">階層ツリー</span>
+                    <button onclick="promptCreateFolder()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 rounded transition" title="フォルダ追加">
+                        <i data-lucide="folder-plus" class="w-4 h-4"></i>
+                    </button>
+                </div>
+                
+                <!-- インボックス (固定) - 廃止のため非表示 -->
+                <div class="px-2 py-2 hidden">
+                    <div id="folder-inbox" onclick="selectFolder('inbox')" 
+                         class="flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-900 hover:text-slate-900 dark:hover:text-white cursor-pointer transition"
+                         ondragover="allowDrop(event)" ondrop="handleFolderDrop(event, 'inbox')">
+                        <div class="flex items-center space-x-2.5">
+                            <i data-lucide="inbox" class="w-5 h-5 text-indigo-500 dark:text-indigo-400"></i>
+                            <span class="text-sm font-medium">📥 インボックス</span>
+                        </div>
+                        <span id="badge-inbox" class="text-xs font-semibold px-2 py-0.5 bg-indigo-500/20 text-indigo-600 dark:text-indigo-300 rounded-full hidden">0</span>
+                    </div>
+                </div>
+                
+                <div class="border-t border-slate-200 dark:border-slate-900 my-1"></div>
+                
+                <!-- ユーザー作成フォルダ一覧 -->
+                <div id="folderList" class="px-2 py-2 space-y-1">
+                    <!-- 動的生成 -->
+                </div>
+            </div>
+
+            <!-- 最下部固定の設定ボタン -->
+            <div class="p-2 border-t border-slate-200 dark:border-slate-900 bg-slate-100/50 dark:bg-slate-950/50 shrink-0">
+                <button onclick="showSettings()" class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-900 hover:text-slate-900 dark:hover:text-white cursor-pointer transition">
+                    <i data-lucide="settings" class="w-5 h-5 text-slate-500 dark:text-slate-400"></i>
+                    <span class="text-sm font-medium">⚙ 設定</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- 中央カラム: ノートタイトル一覧 (25%) -->
+        <section class="w-1/4 bg-slate-50/50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col shrink-0">
+            <div class="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-100/30 dark:bg-slate-900/50 flex items-center justify-between shrink-0">
+                <div class="flex items-center space-x-2">
+                    <h2 id="currentFolderName" class="text-sm font-semibold text-slate-700 dark:text-slate-300">ノート一覧</h2>
+                    <button id="newNoteBtn" onclick="createNewNote()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-505 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 rounded transition hidden" title="新規ノート作成">
+                        <i data-lucide="plus" class="w-4 h-4"></i>
+                    </button>
+                </div>
+                <span id="noteCount" class="text-xs text-slate-550 dark:text-slate-500 font-mono">0 件</span>
+            </div>
+            
+            <!-- ノートリスト -->
+            <div id="noteList" class="flex-1 overflow-y-auto p-2 space-y-2">
+                <!-- 動的生成 -->
+                <div class="text-center text-slate-500 text-xs py-8">フォルダを選択してください</div>
+            </div>
+        </section>
+
+        <!-- 右カラム: メイン表示・編集・ペースト領域 (55%) -->
+        <main class="flex-1 bg-white dark:bg-slate-950 flex flex-col overflow-hidden relative">
+            
+            <!-- 初期状態のプレースホルダー表示 -->
+            <div id="dropZone" class="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-white dark:bg-slate-950 z-10">
+                <div class="max-w-md p-8 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl flex flex-col items-center space-y-4 transition">
+                    <div class="p-4 bg-brand-500/10 rounded-full text-brand-500 dark:text-brand-400">
+                        <i data-lucide="sticky-note" class="w-12 h-12"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-lg font-bold text-slate-800 dark:text-slate-200">ノートが選択されていません</h3>
+                        <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">フォルダ内のノートを選択するか、新規ノートを作成してください。</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ノート詳細・編集表示領域 -->
+            <div id="detailView" class="flex-1 flex flex-col overflow-hidden hidden">
+                <!-- ヘッダー/タイトル/メタデータ -->
+                <div class="p-6 border-b border-slate-200 dark:border-slate-800 bg-slate-100/20 dark:bg-slate-900/20 shrink-0">
+                    <div class="flex items-start justify-between">
+                        <div class="w-full">
+                            <input id="detailTitle" type="text" 
+                                   class="text-xl font-bold bg-transparent text-slate-800 dark:text-slate-100 border-b border-transparent hover:border-slate-300 dark:hover:border-slate-700 focus:border-brand-500 focus:outline-none w-full py-1 transition"
+                                   placeholder="タイトルを入力...">
+                            <div class="flex items-center space-x-2 mt-2 text-xs text-slate-500 dark:text-slate-400">
+                                <span class="flex items-center"><i data-lucide="calendar" class="w-3.5 h-3.5 mr-1"></i> <span id="detailDate">-</span></span>
+                                <span class="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded font-mono text-[10px]" id="detailId">-</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-2 ml-4 shrink-0">
+                            <button onclick="saveNoteChanges()" class="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-brand-600 hover:text-white text-slate-600 dark:text-slate-300 rounded-lg transition" title="保存">
+                                <i data-lucide="save" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="deleteCurrentNote()" class="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-rose-600 hover:text-white text-slate-500 dark:text-slate-400 rounded-lg transition" title="削除">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- タブヘッダー -->
+                <div class="px-6 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 flex space-x-4 shrink-0">
+                    <button id="tabBtn-memo" onclick="switchDetailTab('memo')" class="px-4 py-1.5 text-sm font-semibold border-b-2 border-brand-500 text-brand-600 dark:text-brand-400 focus:outline-none transition">
+                        📝 メモ入力 ＆ 画像
+                    </button>
+                    <button id="tabBtn-ai" onclick="switchDetailTab('ai')" class="px-4 py-1.5 text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 focus:outline-none transition">
+                        ✨ AI解析結果
+                    </button>
+                </div>
+
+                <!-- スクロール可能なメイン情報 -->
+                <div class="flex-1 overflow-y-auto p-6 space-y-6">
+                    <!-- タブ: メモ＆画像 -->
+                    <div id="detail-tab-content-memo" class="space-y-6">
+                        <!-- 画像表示（ある場合） ＆ アップロード/更新領域 -->
+                        <div id="detailImageWrapper" class="space-y-2">
+                            <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">添付画像</span>
+                            
+                            <!-- 画像グリッドコンテナ (複数画像を並べる) -->
+                            <div id="detailImageContainer" class="grid grid-cols-2 sm:grid-cols-3 gap-4 hidden">
+                                <!-- 添付された画像がJSで動的生成される -->
+                            </div>
+
+                            <!-- 画像未添付時のアップロードドロップゾーン -->
+                            <div id="detailImagePlaceholder" class="border-2 border-dashed border-slate-300 dark:border-slate-800 rounded-xl p-8 text-center cursor-pointer hover:border-brand-500 dark:hover:border-brand-500 transition duration-200 flex flex-col items-center justify-center space-y-2"
+                                 onclick="triggerImageFileInput()"
+                                 ondragover="allowImageDragOver(event)"
+                                 ondragleave="handleImageDragLeave(event)"
+                                 ondrop="handleImageDrop(event)">
+                                <div class="p-3 bg-brand-500/10 text-brand-500 dark:text-brand-400 rounded-full">
+                                    <i data-lucide="image-plus" class="w-6 h-6"></i>
+                                </div>
+                                <div>
+                                    <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">画像を添付（クリックして選択、ドラッグ＆ドロップ、または Ctrl + V）</p>
+                                    <p class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">PNG, JPG, GIF など (AI自動OCR・要約が実行されます)</p>
+                                </div>
+                            </div>
+
+                            <!-- 隠しファイルインプット -->
+                            <input type="file" id="imageFileInput" accept="image/*" class="hidden" onchange="handleImageFileSelect(event)">
+                        </div>
+
+                        <!-- 生テキスト (エディタ) -->
+                        <div>
+                            <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block mb-2">生テキスト / メモ本文</span>
+                            <textarea id="detailRawText" class="w-full h-60 p-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm text-slate-800 dark:text-slate-300 focus:outline-none focus:border-slate-300 dark:focus:border-slate-700 transition" placeholder="メモを入力してください..."></textarea>
+                        </div>
+                    </div>
+
+                    <!-- タブ: AI解析結果 -->
+                    <div id="detail-tab-content-ai" class="space-y-6 hidden">
+                        <!-- AI構造化データ (要約 & タグ) -->
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="p-4 rounded-xl bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 flex flex-col">
+                                <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center mb-2">
+                                    <i data-lucide="sparkles" class="w-3.5 h-3.5 mr-1 text-brand-600 dark:text-brand-400"></i> AI 3行要約
+                                </span>
+                                <textarea id="detailSummary" class="flex-1 bg-transparent text-sm text-slate-700 dark:text-slate-300 focus:outline-none resize-none min-h-[100px]" placeholder="AIが要約を作成中..."></textarea>
+                            </div>
+                            <div class="p-4 rounded-xl bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 flex flex-col">
+                                <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center mb-2">
+                                    <i data-lucide="tag" class="w-3.5 h-3.5 mr-1 text-teal-600 dark:text-teal-400"></i> メタデータタグ
+                                </span>
+                                <input id="detailTags" type="text" class="bg-transparent text-sm text-slate-700 dark:text-slate-300 focus:outline-none w-full border-b border-transparent focus:border-slate-300 dark:focus:border-slate-700" placeholder="カンマ区切りでタグを入力...">
+                                <div id="detailTagsList" class="flex flex-wrap gap-1.5 mt-3">
+                                    <!-- タグバッジ -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- OCRテキスト (読み取り専用) -->
+                        <div id="detailOcrContainer" class="hidden">
+                            <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block mb-2">画像から抽出した生OCRテキスト</span>
+                            <pre id="detailOcrText" class="w-full p-4 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-900 rounded-xl text-xs text-slate-600 dark:text-slate-400 font-mono overflow-x-auto whitespace-pre-wrap"></pre>
+                        </div>
+                        
+                        <!-- 仕分け保留 (pending_review) 時の手動フォルダ決定UI -->
+                        <div id="pendingReviewUi" class="p-5 rounded-xl border border-yellow-500/30 bg-yellow-500/5 text-slate-700 dark:text-slate-300 hidden space-y-3">
+                            <div class="flex items-center space-x-2 text-yellow-600 dark:text-yellow-400 font-semibold text-sm">
+                                <i data-lucide="alert-circle" class="w-4 h-4"></i>
+                                <span>AI仕分け保留：正しい分類先フォルダを決定してください</span>
+                            </div>
+                            <p class="text-xs text-slate-500 dark:text-slate-400">自信度が低かったか、既存のフォルダに該当しませんでした。移動先と理由を入力することで、AIがルールを学習します。</p>
+                            <div class="flex flex-col md:flex-row gap-3">
+                                <select id="pendingFolderSelect" class="bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm px-3 py-2 text-slate-800 dark:text-slate-200 focus:outline-none">
+                                    <!-- フォルダオプション -->
+                                </select>
+                                <input id="pendingReasonInput" type="text" placeholder="修正理由（例: 『旅行の計画なので旅行フォルダへ』）" 
+                                       class="flex-1 bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm px-3 py-2 text-slate-800 dark:text-slate-200 focus:outline-none">
+                                <button onclick="submitFolderFix()" class="px-5 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg text-sm font-semibold transition shrink-0">
+                                    確定 ＆ 学習
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 検索 / RAG 回答表示領域 -->
+            <div id="searchView" class="flex-1 flex flex-col overflow-hidden hidden">
+                <div class="p-6 border-b border-slate-200 dark:border-slate-800 bg-slate-100/20 dark:bg-slate-900/20 shrink-0 flex items-center justify-between">
+                    <div>
+                        <h2 class="text-lg font-bold text-slate-800 dark:text-slate-200">ハイブリッド検索 ＆ AI回答結果</h2>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">クエリ: 「<span id="searchQueryText" class="text-slate-650 dark:text-slate-300 font-semibold">-</span>」</p>
+                    </div>
+                    <button onclick="closeSearchView()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white rounded transition">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-6 space-y-6">
+                    <!-- RAG回答 -->
+                    <div class="p-5 rounded-2xl bg-gradient-to-br from-violet-100/50 to-slate-50 dark:from-violet-900/20 dark:to-slate-900 border border-brand-500/20 text-slate-800 dark:text-slate-200">
+                        <h3 class="text-sm font-bold text-brand-600 dark:text-brand-400 flex items-center mb-3">
+                            <i data-lucide="sparkles" class="w-4 h-4 mr-1.5 animate-pulse"></i> AIアシスタントの回答 (RAG)
+                        </h3>
+                        <p id="searchAnswerText" class="text-sm leading-relaxed whitespace-pre-wrap">AIが回答を生成中...</p>
+                    </div>
+                    
+                    <!-- 参照元ノート一覧 -->
+                    <div class="space-y-3">
+                        <h3 class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">参照した関連ノート (上位ヒット)</h3>
+                        <div id="searchReferencesList" class="space-y-2">
+                            <!-- 参照ノートカード -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 設定表示領域 -->
+            <div id="settingsView" class="flex-1 flex flex-col overflow-hidden hidden">
+                <div class="p-6 border-b border-slate-200 dark:border-slate-800 bg-slate-100/20 dark:bg-slate-900/20 shrink-0 flex items-center justify-between">
+                    <div>
+                        <h2 class="text-lg font-bold text-slate-800 dark:text-slate-200">⚙ アプリケーション設定</h2>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">カラーテーマや各種アプリ表示設定をカスタマイズします。</p>
+                    </div>
+                    <button onclick="closeSettingsView()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white rounded transition">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-6 space-y-6">
+                    <!-- カラーテーマ設定セクション -->
+                    <div class="p-5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800">
+                        <h3 class="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center mb-4">
+                            <i data-lucide="palette" class="w-4 h-4 mr-1.5 text-brand-600 dark:text-brand-400"></i> 表示テーマ設定
+                        </h3>
+                        <div class="space-y-3">
+                            <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">色のテーマ</span>
+                            <div class="flex items-center space-x-6">
+                                <label class="flex items-center space-x-2.5 cursor-pointer text-slate-700 dark:text-slate-300">
+                                    <input type="radio" name="colorTheme" value="light" onclick="setAppTheme('light')" class="w-4 h-4 text-brand-600 focus:ring-brand-500 bg-slate-100 dark:bg-slate-850 border-slate-300 dark:border-slate-700">
+                                    <span class="text-sm font-medium">ライトテーマ (White)</span>
+                                </label>
+                                <label class="flex items-center space-x-2.5 cursor-pointer text-slate-700 dark:text-slate-300">
+                                    <input type="radio" name="colorTheme" value="dark" onclick="setAppTheme('dark')" class="w-4 h-4 text-brand-600 focus:ring-brand-500 bg-slate-100 dark:bg-slate-850 border-slate-300 dark:border-slate-700">
+                                    <span class="text-sm font-medium">ダークテーマ (Dark)</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AI設定セクション -->
+                    <div class="p-5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 space-y-4">
+                        <h3 class="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center">
+                            <i data-lucide="brain" class="w-4 h-4 mr-1.5 text-brand-600 dark:text-brand-400"></i> AI 推論・検索設定
+                        </h3>
+                        
+                        <!-- AIモデル選択 -->
+                        <div class="space-y-2">
+                            <label for="settingModelName" class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">AIモデル名</label>
+                            <select id="settingModelName" onchange="saveSettings()" class="w-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm px-3 py-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-brand-500">
+                                <option value="gemini-3.5-flash">Gemini 3.5 Flash (推奨)</option>
+                                <option value="gemini-3.1-pro">Gemini 3.1 Pro</option>
+                                <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+                            </select>
+                        </div>
+                        
+                        <!-- 推論レベル -->
+                        <div class="space-y-2">
+                            <label for="settingThinkingLevel" class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">モデル推論力 (thinking_level)</label>
+                            <select id="settingThinkingLevel" onchange="saveSettings()" class="w-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm px-3 py-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-brand-500">
+                                <option value="standard">Standard (標準)</option>
+                                <option value="high">High (高度な推論・低temperature・ステップ実行)</option>
+                                <option value="low">Low (簡易/高速)</option>
+                                <option value="creative">Creative (創造的/高temperature)</option>
+                            </select>
+                        </div>
+                        
+                        <!-- 自動仕分け自信度閾値 -->
+                        <div class="space-y-2">
+                            <div class="flex justify-between items-center">
+                                <label for="settingConfidenceThreshold" class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">自動仕分け自信度閾値</label>
+                                <span id="confidenceThresholdValue" class="text-xs font-mono font-bold text-brand-600 dark:text-brand-400">0.7</span>
+                            </div>
+                            <input type="range" id="settingConfidenceThreshold" min="0.5" max="1.0" step="0.05" value="0.7" 
+                                   oninput="document.getElementById('confidenceThresholdValue').innerText = this.value"
+                                   onchange="saveSettings()"
+                                   class="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-brand-600 dark:accent-brand-400">
+                        </div>
+
+                        <!-- RAG参照数 -->
+                        <div class="space-y-2">
+                            <label for="settingRagLimit" class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">RAG参照件数 (検索結果件数)</label>
+                            <input type="number" id="settingRagLimit" min="1" max="20" value="5" onchange="saveSettings()"
+                                   class="w-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm px-3 py-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-brand-500">
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- トースト通知 -->
+    <div id="toastContainer" class="fixed bottom-6 right-6 z-50 flex flex-col space-y-2 max-w-sm pointer-events-none">
+        <!-- トーストが動的に挿入される -->
+    </div>
+
+    <!-- 画像ズームモーダル -->
+    <div id="zoomModal" onclick="closeZoomModal()" class="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 cursor-zoom-out hidden">
+        <img id="zoomImageElement" class="max-w-full max-h-full object-contain rounded-lg">
+    </div>
+
+    <!-- JavaScript ロジック -->
+    <script>
+        // グローバル状態管理
+        let folders = [];
+        let notes = [];
+        let currentFolderId = null;
+        let currentNoteId = null;
+        let ws = null;
+        
+        // 直前の右カラム表示状態のキャッシュ (設定画面を開いた後に復元するため)
+        let activeViewBeforeSettings = 'dropZone'; 
+
+        // 初期化処理
+        document.addEventListener('DOMContentLoaded', () => {
+            initTheme();
+            fetchFolders();
+            fetchSettings();
+            initWebSocket();
+            setupPasteAndDrop();
+            lucide.createIcons();
+            
+            // ショートカットキー設定
+            document.addEventListener('keydown', (e) => {
+                // Ctrl + S で保存
+                if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                    if (currentNoteId && document.getElementById('detailView').classList.contains('hidden') === false) {
+                        e.preventDefault();
+                        saveNoteChanges();
+                    }
+                }
+            });
+        });
+
+        // テーマの初期ロード適用
+        function initTheme() {
+            const savedTheme = localStorage.getItem('theme') || 'dark';
+            setAppTheme(savedTheme);
+        }
+
+        // 詳細画面のタブ切り替え制御
+        function switchDetailTab(tab) {
+            const memoBtn = document.getElementById('tabBtn-memo');
+            const aiBtn = document.getElementById('tabBtn-ai');
+            const memoContent = document.getElementById('detail-tab-content-memo');
+            const aiContent = document.getElementById('detail-tab-content-ai');
+
+            if (tab === 'memo') {
+                memoBtn.classList.add('border-brand-500', 'text-brand-600', 'dark:text-brand-400');
+                memoBtn.classList.remove('border-transparent', 'text-slate-500', 'dark:text-slate-400');
+                aiBtn.classList.remove('border-brand-500', 'text-brand-600', 'dark:text-brand-400');
+                aiBtn.classList.add('border-transparent', 'text-slate-500', 'dark:text-slate-400');
+
+                memoContent.classList.remove('hidden');
+                aiContent.classList.add('hidden');
+            } else {
+                aiBtn.classList.add('border-brand-500', 'text-brand-600', 'dark:text-brand-400');
+                aiBtn.classList.remove('border-transparent', 'text-slate-500', 'dark:text-slate-400');
+                memoBtn.classList.remove('border-brand-500', 'text-brand-600', 'dark:text-brand-400');
+                memoBtn.classList.add('border-transparent', 'text-slate-500', 'dark:text-slate-400');
+
+                aiContent.classList.remove('hidden');
+                memoContent.classList.add('hidden');
+            }
+        }
+
+        // テーマ変更と適用
+        function setAppTheme(theme) {
+            const html = document.documentElement;
+            if (theme === 'dark') {
+                html.classList.add('dark');
+            } else {
+                html.classList.remove('dark');
+            }
+            localStorage.setItem('theme', theme);
+            
+            // ラジオボタンの checked 状態を反映
+            const radios = document.getElementsByName('colorTheme');
+            radios.forEach(radio => {
+                if (radio.value === theme) {
+                    radio.checked = true;
+                }
+            });
+        }
+
+        // 設定画面の表示
+        function showSettings() {
+            // 現在のビューの特定とキャッシュ
+            const detailView = document.getElementById('detailView');
+            const dropZone = document.getElementById('dropZone');
+            const searchView = document.getElementById('searchView');
+            
+            if (!detailView.classList.contains('hidden')) {
+                activeViewBeforeSettings = 'detailView';
+            } else if (!searchView.classList.contains('hidden')) {
+                activeViewBeforeSettings = 'searchView';
+            } else {
+                activeViewBeforeSettings = 'dropZone';
+            }
+            
+            // 各ビューを非表示にし、設定を表示
+            detailView.classList.add('hidden');
+            dropZone.classList.add('hidden');
+            searchView.classList.add('hidden');
+            document.getElementById('settingsView').classList.remove('hidden');
+        }
+
+        // 設定画面を閉じる
+        function closeSettingsView() {
+            document.getElementById('settingsView').classList.add('hidden');
+            
+            // キャッシュした直前のビューを復元
+            if (activeViewBeforeSettings === 'detailView' && currentNoteId) {
+                document.getElementById('detailView').classList.remove('hidden');
+            } else if (activeViewBeforeSettings === 'searchView') {
+                document.getElementById('searchView').classList.remove('hidden');
+            } else {
+                document.getElementById('dropZone').classList.remove('hidden');
+            }
+        }
+
+        // フォルダ一覧の取得
+        async function fetchFolders() {
+            try {
+                const res = await fetch('/api/folders');
+                folders = await res.json();
+                renderFolders();
+                updateInboxBadge();
+
+                // フォルダの自動選択（inbox以外で最初のフォルダ）
+                const validFolders = folders.filter(f => f.id !== 'inbox');
+                if (validFolders.length > 0 && currentFolderId === null) {
+                    await selectFolder(validFolders[0].id);
+                } else if (validFolders.length === 0) {
+                    currentFolderId = null;
+                    const container = document.getElementById('noteList');
+                    container.innerHTML = '<div class="text-center text-slate-500 text-xs py-8">フォルダを作成してください</div>';
+                    document.getElementById('currentFolderName').innerText = 'フォルダがありません';
+                    document.getElementById('newNoteBtn').classList.add('hidden');
+                } else if (currentFolderId) {
+                    await selectFolder(currentFolderId);
+                }
+            } catch (err) {
+                console.error("Failed to fetch folders:", err);
+            }
+        }
+
+        // フォルダツリーの描画
+        function renderFolders() {
+            const list = document.getElementById('folderList');
+            list.innerHTML = '';
+            
+            // inbox 以外のフォルダをレンダリング
+            folders.filter(f => f.id !== 'inbox').forEach(f => {
+                const item = document.createElement('div');
+                item.className = `flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-900 hover:text-slate-900 dark:hover:text-white cursor-pointer transition group ${currentFolderId === f.id ? 'bg-slate-200 dark:bg-slate-900 text-slate-900 dark:text-white font-medium border-l-2 border-brand-500' : ''}`;
+                item.onclick = () => selectFolder(f.id);
+                
+                // ドラッグ＆ドロップ受け入れ属性を設定
+                item.setAttribute('ondragover', 'allowDrop(event)');
+                item.setAttribute('ondrop', `handleFolderDrop(event, '${f.id}')`);
+                
+                item.innerHTML = `
+                    <div class="flex items-center space-x-2.5 overflow-hidden">
+                        <i data-lucide="folder" class="w-5 h-5 text-brand-500 dark:text-brand-400 shrink-0"></i>
+                        <span class="text-sm truncate">${escapeHtml(f.name)}</span>
+                    </div>
+                    <div class="flex items-center space-x-1 shrink-0 ml-2">
+                        <button onclick="renameFolder(event, '${f.id}', '${escapeHtml(f.name).replace(/'/g, "\\'")}')" 
+                                class="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-300 dark:hover:bg-slate-800 rounded text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 transition" 
+                                title="名前変更">
+                            <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button onclick="deleteFolder(event, '${f.id}', '${escapeHtml(f.name).replace(/'/g, "\\'")}')" 
+                                class="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-300 dark:hover:bg-slate-800 rounded text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition" 
+                                title="削除">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+                `;
+                list.appendChild(item);
+            });
+            lucide.createIcons();
+        }
+
+        // インボックスの未完了バッジ更新
+        async function updateInboxBadge() {
+            try {
+                const res = await fetch('/api/folders/inbox/notes');
+                const inboxNotes = await res.json();
+                const badge = document.getElementById('badge-inbox');
+                const processingCount = inboxNotes.filter(n => n.status !== 'completed').length;
+                
+                if (processingCount > 0) {
+                    badge.innerText = processingCount;
+                    badge.classList.remove('hidden');
+                } else {
+                    badge.classList.add('hidden');
+                }
+            } catch (err) {
+                console.error("Failed to update inbox badge:", err);
+            }
+        }
+
+        // フォルダ選択
+        async function selectFolder(folderId) {
+            currentFolderId = folderId;
+            currentNoteId = null;
+            
+            // 設定画面は閉じる
+            document.getElementById('settingsView').classList.add('hidden');
+            
+            renderFolders();
+            
+            // 右カラム表示制御
+            document.getElementById('dropZone').classList.remove('hidden');
+            document.getElementById('detailView').classList.add('hidden');
+            document.getElementById('searchView').classList.add('hidden');
+            
+            if (folderId && folderId !== 'inbox') {
+                document.getElementById('newNoteBtn').classList.remove('hidden');
+            } else {
+                document.getElementById('newNoteBtn').classList.add('hidden');
+            }
+
+            // フォルダ名表示
+            const folderObj = folders.find(f => f.id === folderId);
+            document.getElementById('currentFolderName').innerText = folderObj ? folderObj.name : 'ノート一覧';
+
+            // ノートリスト取得
+            await fetchNotes();
+        }
+
+        // フォルダ作成ダイアログ
+        async function promptCreateFolder() {
+            const name = prompt("作成するフォルダの名前を入力してください:");
+            if (!name || !name.trim()) return;
+
+            try {
+                const res = await fetch('/api/folders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name.trim() })
+                });
+                if (res.ok) {
+                    showToast("フォルダを作成しました", "success");
+                    await fetchFolders();
+                } else {
+                    const err = await res.json();
+                    showToast(err.detail || "フォルダ作成に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // ノートリスト取得
+        async function fetchNotes() {
+            try {
+                const res = await fetch(`/api/folders/${currentFolderId}/notes`);
+                notes = await res.json();
+                renderNotes();
+                
+                document.getElementById('noteCount').innerText = `${notes.length} 件`;
+            } catch (err) {
+                console.error("Failed to fetch notes:", err);
+            }
+        }
+
+        // ノートリスト描画
+        function renderNotes() {
+            const container = document.getElementById('noteList');
+            container.innerHTML = '';
+
+            if (notes.length === 0) {
+                container.innerHTML = '<div class="text-center text-slate-500 text-xs py-8">ノートがありません</div>';
+                return;
+            }
+
+            notes.forEach(note => {
+                const item = document.createElement('div');
+                item.className = `p-3.5 rounded-xl cursor-pointer select-none transition border flex flex-col space-y-2 relative group ${
+                    currentNoteId === note.id 
+                    ? 'bg-brand-500/10 border-brand-500/50 hover:bg-brand-500/15' 
+                    : note.status === 'pending_review' 
+                    ? 'bg-yellow-500/5 border-yellow-500/30 hover:bg-yellow-500/10' 
+                    : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-900'
+                }`;
+                item.onclick = () => selectNote(note.id);
+                
+                // ドラッグ可能属性
+                item.setAttribute('draggable', 'true');
+                item.setAttribute('ondragstart', `handleNoteDragStart(event, '${note.id}')`);
+
+                // ステータスバッジ
+                let statusBadge = '';
+                if (note.status === 'processing') {
+                    statusBadge = `
+                        <div class="flex items-center space-x-1 text-[10px] text-indigo-500 dark:text-indigo-400 animate-pulse bg-indigo-500/10 px-2 py-0.5 rounded-full shrink-0">
+                            <span class="w-1.5 h-1.5 bg-indigo-500 dark:bg-indigo-400 rounded-full animate-ping"></span>
+                            <span>AI構造化中...</span>
+                        </div>
+                    `;
+                } else if (note.status === 'pending_review') {
+                    statusBadge = `
+                        <div class="flex items-center space-x-0.5 text-[10px] text-yellow-600 dark:text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded-full shrink-0">
+                            <i data-lucide="help-circle" class="w-3 h-3"></i>
+                            <span>仕分け保留</span>
+                        </div>
+                    `;
+                }
+
+                // タイトル決定 (未分類や空なら生テキストの切り抜き)
+                const displayTitle = note.title || note.raw_text.substring(0, 15) || '新規ノート(画像)...';
+                const snippet = note.ai_summary ? note.ai_summary.split('\n')[0] : note.raw_text.substring(0, 30);
+
+                item.innerHTML = `
+                    <div class="flex items-start justify-between space-x-2">
+                        <span class="text-sm font-semibold truncate ${note.title ? 'text-slate-800 dark:text-slate-200' : 'text-slate-400 italic'}">${escapeHtml(displayTitle)}</span>
+                        ${statusBadge}
+                    </div>
+                    <p class="text-xs text-slate-500 dark:text-slate-400 truncate">${escapeHtml(snippet)}</p>
+                    <div class="flex items-center justify-between text-[10px] text-slate-500 mt-1 shrink-0">
+                        <span class="font-mono">${formatDate(note.updated_at)}</span>
+                        ${note.image_path ? '<span class="flex items-center text-slate-500 dark:text-slate-400"><i data-lucide="image" class="w-3 h-3 mr-0.5"></i>画像添付</span>' : ''}
+                    </div>
+                    <!-- ホバー時の操作ボタン -->
+                    <div class="absolute top-2 right-2 flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition bg-white dark:bg-slate-950 shadow-md rounded border border-slate-200 dark:border-slate-850 p-0.5">
+                        <button onclick="renameNote(event, '${note.id}', '${escapeHtml(displayTitle).replace(/'/g, "\\'")}')" 
+                                class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 transition" 
+                                title="タイトル変更">
+                            <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button onclick="deleteNoteFromList(event, '${note.id}', '${escapeHtml(displayTitle).replace(/'/g, "\\'")}')" 
+                                class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 hover:text-rose-600 dark:hover:text-rose-450 transition" 
+                                title="削除">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+                `;
+                container.appendChild(item);
+            });
+            lucide.createIcons();
+        }
+
+        // ノート詳細の選択
+        async function selectNote(noteId) {
+            currentNoteId = noteId;
+            renderNotes();
+
+            document.getElementById('dropZone').classList.add('hidden');
+            document.getElementById('searchView').classList.add('hidden');
+            document.getElementById('settingsView').classList.add('hidden');
+            const view = document.getElementById('detailView');
+            view.classList.remove('hidden');
+
+            try {
+                const res = await fetch(`/api/notes/${noteId}`);
+                if (!res.ok) throw new Error("Note not found");
+                const note = await res.json();
+                
+                // DOMへの埋め込み
+                document.getElementById('detailId').innerText = note.id;
+                document.getElementById('detailTitle').value = note.title || '';
+                document.getElementById('detailDate').innerText = formatDate(note.updated_at);
+                document.getElementById('detailRawText').value = note.raw_text || '';
+                document.getElementById('detailSummary').value = note.ai_summary || '';
+                document.getElementById('detailTags').value = note.ai_tags || '';
+                
+                // タグのパース
+                renderTagsList(note.ai_tags);
+
+                // 画像処理
+                const imgContainer = document.getElementById('detailImageContainer');
+                const imgPlaceholder = document.getElementById('detailImagePlaceholder');
+                imgContainer.innerHTML = '';
+
+                if (note.images && note.images.length > 0) {
+                    note.images.forEach(img => {
+                        const card = document.createElement('div');
+                        card.className = 'relative group rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 aspect-video flex justify-center items-center';
+                        card.innerHTML = `
+                            <img src="/${img.image_path}" alt="添付画像" class="max-h-full max-w-full object-contain cursor-zoom-in transition hover:scale-[1.02]" onclick="zoomSpecificImage('/${img.image_path}')">
+                            <!-- 個別削除ボタン -->
+                            <button onclick="deleteSpecificImage(event, '${img.id}')" 
+                                    class="absolute top-2 right-2 p-1.5 bg-slate-900/80 hover:bg-rose-600 rounded-lg text-white opacity-0 group-hover:opacity-100 transition shadow-lg" 
+                                    title="画像を削除">
+                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                        `;
+                        imgContainer.appendChild(card);
+                    });
+
+                    // グリッド末尾の追加ボタン
+                    const addCard = document.createElement('div');
+                    addCard.className = 'border-2 border-dashed border-slate-300 dark:border-slate-800 hover:border-brand-500 dark:hover:border-brand-500 rounded-xl aspect-video flex flex-col justify-center items-center cursor-pointer transition text-slate-400 hover:text-brand-500';
+                    addCard.onclick = () => triggerImageFileInput();
+                    addCard.innerHTML = `
+                        <i data-lucide="image-plus" class="w-5 h-5 mb-1"></i>
+                        <span class="text-[10px] font-semibold">画像を追加</span>
+                    `;
+                    imgContainer.appendChild(addCard);
+
+                    imgContainer.classList.remove('hidden');
+                    imgPlaceholder.classList.add('hidden');
+                } else {
+                    imgContainer.classList.add('hidden');
+                    imgPlaceholder.classList.remove('hidden');
+                }
+
+                // OCRテキスト処理
+                const ocrContainer = document.getElementById('detailOcrContainer');
+                if (note.ai_ocr_text) {
+                    document.getElementById('detailOcrText').innerText = note.ai_ocr_text;
+                    ocrContainer.classList.remove('hidden');
+                } else {
+                    ocrContainer.classList.add('hidden');
+                }
+
+                // 仕分け保留のUI表示切替
+                const pendingUi = document.getElementById('pendingReviewUi');
+                if (note.status === 'pending_review') {
+                    pendingUi.classList.remove('hidden');
+                    populatePendingFoldersSelect();
+                } else {
+                    pendingUi.classList.add('hidden');
+                }
+
+                // デフォルトで「メモ＆画像」タブを表示
+                switchDetailTab('memo');
+
+            } catch (err) {
+                showToast("ノートの読み込みに失敗しました", "error");
+            }
+        }
+
+        // タグリストの描画
+        function renderTagsList(tagsString) {
+            const list = document.getElementById('detailTagsList');
+            list.innerHTML = '';
+            if (!tagsString) return;
+
+            tagsString.split(',').map(t => t.trim()).filter(Boolean).forEach(tag => {
+                const badge = document.createElement('span');
+                badge.className = 'text-[10px] font-medium px-2 py-0.5 bg-teal-500/10 text-teal-600 dark:text-teal-300 rounded border border-teal-500/20';
+                badge.innerText = `# ${tag}`;
+                list.appendChild(badge);
+            });
+        }
+
+        // 仕分け保留時のフォルダセレクトボックス初期化
+        function populatePendingFoldersSelect() {
+            const select = document.getElementById('pendingFolderSelect');
+            select.innerHTML = '';
+            
+            // inbox 以外のフォルダから選択
+            folders.filter(f => f.id !== 'inbox').forEach(f => {
+                const opt = document.createElement('option');
+                opt.value = f.id;
+                opt.innerText = f.name;
+                select.appendChild(opt);
+            });
+        }
+
+        // 手動保存
+        async function saveNoteChanges() {
+            if (!currentNoteId) return;
+
+            const title = document.getElementById('detailTitle').value;
+            const raw_text = document.getElementById('detailRawText').value;
+            const ai_summary = document.getElementById('detailSummary').value;
+            const ai_tags = document.getElementById('detailTags').value;
+            
+            // 現在の所属フォルダを維持
+            const noteObj = notes.find(n => n.id === currentNoteId);
+            const parent_folder_id = noteObj ? noteObj.parent_folder_id : 'inbox';
+
+            try {
+                const res = await fetch(`/api/notes/${currentNoteId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title,
+                        raw_text,
+                        ai_summary,
+                        ai_tags,
+                        parent_folder_id
+                    })
+                });
+                
+                if (res.ok) {
+                    showToast("変更を保存しました (ベクトル再計算中)", "success");
+                    renderTagsList(ai_tags);
+                    await fetchNotes();
+                } else {
+                    showToast("保存に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // 削除
+        async function deleteCurrentNote() {
+            if (!currentNoteId) return;
+            if (!confirm("本当にこのノートを完全に削除しますか？\n（画像ファイルやベクトルデータも物理削除されます）")) return;
+
+            try {
+                const res = await fetch(`/api/notes/${currentNoteId}`, { method: 'DELETE' });
+                if (res.ok) {
+                    showToast("ノートを削除しました", "success");
+                    document.getElementById('detailView').classList.add('hidden');
+                    currentNoteId = null;
+                    await fetchNotes();
+                    await updateInboxBadge();
+                } else {
+                    showToast("削除に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // 手動仕分け（確定 ＆ 学習）送信
+        async function submitFolderFix() {
+            const correct_folder_id = document.getElementById('pendingFolderSelect').value;
+            const reason = document.getElementById('pendingReasonInput').value;
+
+            if (!correct_folder_id) {
+                showToast("移動先フォルダを選択してください", "error");
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/fix-folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        note_id: currentNoteId,
+                        correct_folder_id,
+                        reason: reason.trim()
+                    })
+                });
+                
+                if (res.ok) {
+                    showToast("フィードバックを送信しました。AIルールが更新されます。", "success");
+                    document.getElementById('pendingReviewUi').classList.add('hidden');
+                    document.getElementById('pendingReasonInput').value = '';
+                    
+                    // リロードすることなく、リスト更新およびバッジ更新をバックグラウンドに任せる
+                    await selectFolder(currentFolderId);
+                    await updateInboxBadge();
+                } else {
+                    showToast("修正送信に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // ドラッグ＆ドロップ用イベントハンドラ (手動移動用)
+        function handleNoteDragStart(e, noteId) {
+            e.dataTransfer.setData('text/plain', noteId);
+            e.dataTransfer.effectAllowed = 'move';
+        }
+
+        function allowDrop(e) {
+            e.preventDefault();
+        }
+
+        async function handleFolderDrop(e, targetFolderId) {
+            e.preventDefault();
+            const noteId = e.dataTransfer.getData('text/plain');
+            if (!noteId) return;
+
+            const noteObj = notes.find(n => n.id === noteId);
+            if (noteObj && noteObj.parent_folder_id === targetFolderId) {
+                return; // 同一フォルダへのドロップは無視
+            }
+
+            const reason = prompt("この手動移動の判断理由があれば入力してください（AIがルールを学習します）:");
+            if (reason === null) return; // キャンセルされた場合
+
+            try {
+                const res = await fetch('/api/fix-folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        note_id: noteId,
+                        correct_folder_id: targetFolderId,
+                        reason: reason.trim()
+                    })
+                });
+                
+                if (res.ok) {
+                    showToast("移動処理を開始しました（AIルール学習中）", "success");
+                    // 完了前に仮でリストから消去してサクサク動かす
+                    notes = notes.filter(n => n.id !== noteId);
+                    renderNotes();
+                    await updateInboxBadge();
+                } else {
+                    showToast("移動処理に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // ハイブリッド検索 ＆ RAG の実行
+        async function performSearch() {
+            const query = document.getElementById('searchInput').value;
+            if (!query || !query.trim()) {
+                showToast("クエリを入力してください", "error");
+                return;
+            }
+
+            // UI切り替え
+            document.getElementById('dropZone').classList.add('hidden');
+            document.getElementById('detailView').classList.add('hidden');
+            document.getElementById('settingsView').classList.add('hidden');
+            const searchView = document.getElementById('searchView');
+            searchView.classList.remove('hidden');
+
+            document.getElementById('searchQueryText').innerText = query;
+            document.getElementById('searchAnswerText').innerText = "AIがあなたの過去のナレッジを調査して回答を生成しています...";
+            document.getElementById('searchReferencesList').innerHTML = '';
+
+            try {
+                const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                if (!res.ok) throw new Error("Search failed");
+                const data = await res.json();
+
+                // 回答表示
+                document.getElementById('searchAnswerText').innerText = data.answer;
+
+                // 参照元リスト表示
+                const list = document.getElementById('searchReferencesList');
+                if (data.references.length === 0) {
+                    list.innerHTML = '<div class="text-xs text-slate-500">参照されたドキュメントはありません。</div>';
+                } else {
+                    data.references.forEach(ref => {
+                        const card = document.createElement('div');
+                        card.className = 'p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-brand-500/50 cursor-pointer transition flex flex-col space-y-1';
+                        card.onclick = () => {
+                            // 参照元をクリックしたらそのノートを詳細表示
+                            closeSearchView();
+                            selectFolder(ref.parent_folder_id).then(() => {
+                                selectNote(ref.id);
+                            });
+                        };
+                        card.innerHTML = `
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-bold text-slate-800 dark:text-slate-200">${escapeHtml(ref.title || '無題のノート')}</span>
+                                <span class="text-[10px] text-slate-500 font-mono">${formatDate(ref.updated_at)}</span>
+                            </div>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 truncate">${escapeHtml(ref.ai_summary || '')}</p>
+                            ${ref.ai_tags ? `<div class="flex flex-wrap gap-1 mt-1">${ref.ai_tags.split(',').slice(0, 3).map(t => `<span class="text-[8px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 px-1.5 py-0.2 rounded">#${t.trim()}</span>`).join('')}</div>` : ''}
+                        `;
+                        list.appendChild(card);
+                    });
+                }
+
+            } catch (err) {
+                document.getElementById('searchAnswerText').innerText = "検索または回答生成中にエラーが発生しました。";
+                showToast("検索エラーが発生しました", "error");
+            }
+        }
+
+        function closeSearchView() {
+            document.getElementById('searchView').classList.add('hidden');
+            if (currentFolderId === 'inbox') {
+                document.getElementById('dropZone').classList.remove('hidden');
+            } else if (currentNoteId) {
+                document.getElementById('detailView').classList.remove('hidden');
+            }
+        }
+
+        // コピペ ＆ ドラッグドロップによる画像添付のイベント監視
+        function setupPasteAndDrop() {
+            // クリップボードからの Ctrl+V ペースト監視
+            document.addEventListener('paste', async (event) => {
+                const activeTag = document.activeElement.tagName;
+                if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') {
+                    // 入力欄にフォーカスがあるときは通常のテキストペーストを邪魔しない
+                    return;
+                }
+
+                if (!currentNoteId) {
+                    showToast("画像を添付するノートを選択してください", "warning");
+                    return;
+                }
+
+                const items = event.clipboardData.items;
+                let imageFile = null;
+
+                for (let item of items) {
+                    if (item.type.indexOf("image") !== -1) {
+                        imageFile = item.getAsFile();
+                        break;
+                    }
+                }
+
+                if (imageFile) {
+                    await uploadImage(imageFile);
+                }
+            });
+        }
+
+        // 画像選択用のファイルインプット呼び出し
+        function triggerImageFileInput() {
+            document.getElementById('imageFileInput').click();
+        }
+
+        // ファイル選択ダイアログで画像が選ばれたときのイベント
+        async function handleImageFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            await uploadImage(file);
+            event.target.value = '';
+        }
+
+        // 画像用ドロップゾーンのドラッグ＆ドロップイベント
+        function allowImageDragOver(e) {
+            e.preventDefault();
+            document.getElementById('detailImagePlaceholder').classList.add('border-brand-500', 'bg-brand-500/5');
+        }
+
+        function handleImageDragLeave(e) {
+            e.preventDefault();
+            document.getElementById('detailImagePlaceholder').classList.remove('border-brand-500', 'bg-brand-500/5');
+        }
+
+        async function handleImageDrop(e) {
+            e.preventDefault();
+            document.getElementById('detailImagePlaceholder').classList.remove('border-brand-500', 'bg-brand-500/5');
+            
+            if (!currentNoteId) {
+                showToast("画像を添付するノートを選択してください", "warning");
+                return;
+            }
+
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type.indexOf("image") !== -1) {
+                await uploadImage(files[0]);
+            }
+        }
+
+        // ノートへの画像アップロード処理 (ノンブロッキング)
+        async function uploadImage(file) {
+            if (!currentNoteId) return;
+
+            const formData = new FormData();
+            formData.append("image", file);
+
+            showToast("画像アップロード完了：AI解析を開始しました...", "info");
+
+            // 一時的にリスト上で処理中アイコンを出すため、仮でstatusを変更
+            const noteIndex = notes.findIndex(n => n.id === currentNoteId);
+            if (noteIndex !== -1) {
+                notes[noteIndex].status = 'processing';
+                renderNotes();
+            }
+
+            try {
+                const res = await fetch(`/api/notes/${currentNoteId}/image`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    await fetchNotes();
+                    await selectNote(currentNoteId);
+                } else {
+                    showToast("画像の添付に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // WebSocket 初期化
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUri = `${protocol}//${window.location.host}/ws`;
+            
+            ws = new WebSocket(wsUri);
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'completed') {
+                    if (data.error) {
+                        showToast(`解析エラー: ${data.error}`, "error");
+                    } else {
+                        showToast(`自動分類完了: 「${data.title}」`, "success");
+                    }
+                    
+                    if (currentFolderId === 'inbox' || currentFolderId === data.folder_id) {
+                        fetchNotes();
+                    }
+                    if (currentNoteId === data.note_id) {
+                        selectNote(data.note_id);
+                    }
+                    updateInboxBadge();
+                } else if (data.type === 'pending_review') {
+                    if (data.error) {
+                        showToast(`解析エラー: ${data.error}`, "error");
+                    } else {
+                        showToast(`仕分け保留: 「${data.title}」の配置を指定してください`, "warning");
+                    }
+                    
+                    if (currentFolderId === 'inbox' || currentFolderId === data.folder_id) {
+                        fetchNotes();
+                    }
+                    if (currentNoteId === data.note_id) {
+                        selectNote(data.note_id);
+                    }
+                    updateInboxBadge();
+                }
+            };
+
+            ws.onclose = () => {
+                console.log("WS closed. Reconnecting...");
+                setTimeout(initWebSocket, 3000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WS error:", err);
+            };
+        }
+
+        // ユーティリティ: エスケープ処理
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // ユーティリティ: 日付フォーマット
+        function formatDate(isoString) {
+            if (!isoString) return '-';
+            try {
+                const d = new Date(isoString);
+                return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+            } catch (e) {
+                return isoString;
+            }
+        }
+
+        // ユーティリティ: トースト表示
+        function showToast(message, type = "info") {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            
+            let bgClass = 'bg-slate-800 text-slate-100 border-slate-700';
+            let icon = 'info';
+            
+            if (type === 'success') {
+                bgClass = 'bg-emerald-950 text-emerald-300 border-emerald-500/30';
+                icon = 'check-circle';
+            } else if (type === 'error') {
+                bgClass = 'bg-rose-950 text-rose-300 border-rose-500/30';
+                icon = 'x-circle';
+            } else if (type === 'warning') {
+                bgClass = 'bg-amber-950 text-amber-300 border-amber-500/30';
+                icon = 'alert-triangle';
+            }
+
+            toast.className = `flex items-center space-x-3 px-4 py-3 rounded-xl border shadow-xl ${bgClass} transition duration-300 transform translate-y-2 opacity-0 shrink-0 pointer-events-auto`;
+            toast.innerHTML = `
+                <i data-lucide="${icon}" class="w-5 h-5 shrink-0"></i>
+                <span class="text-xs font-semibold">${escapeHtml(message)}</span>
+            `;
+            
+            container.appendChild(toast);
+            lucide.createIcons();
+            
+            setTimeout(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-2');
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        // 画像の拡大
+        function zoomImage() {
+            const imgEl = document.getElementById('detailImage');
+            if (imgEl) {
+                zoomSpecificImage(imgEl.src);
+            }
+        }
+
+        function zoomSpecificImage(src) {
+            const modal = document.getElementById('zoomModal');
+            const modalImg = document.getElementById('zoomImageElement');
+            modalImg.src = src;
+            modal.classList.remove('hidden');
+        }
+
+        function closeZoomModal() {
+            document.getElementById('zoomModal').classList.add('hidden');
+        }
+
+        // 個別画像の削除
+        async function deleteSpecificImage(event, imageId) {
+            event.stopPropagation();
+            if (!confirm("この画像を削除しますか？\n（ファイルも物理削除されます）")) return;
+
+            showToast("画像を削除中...", "info");
+
+            try {
+                const res = await fetch(`/api/notes/${currentNoteId}/images/${imageId}`, {
+                    method: 'DELETE'
+                });
+
+                if (res.ok) {
+                    showToast("画像を削除しました。再解析を開始します...", "success");
+                    await fetchNotes();
+                    await selectNote(currentNoteId);
+                } else {
+                    showToast("画像の削除に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // 設定の取得
+        async function fetchSettings() {
+            try {
+                const res = await fetch('/api/settings');
+                if (!res.ok) throw new Error("Failed to fetch settings");
+                const settings = await res.json();
+                
+                if (settings.model_name) {
+                    document.getElementById('settingModelName').value = settings.model_name;
+                }
+                if (settings.thinking_level) {
+                    document.getElementById('settingThinkingLevel').value = settings.thinking_level;
+                }
+                if (settings.confidence_threshold) {
+                    const val = settings.confidence_threshold;
+                    document.getElementById('settingConfidenceThreshold').value = val;
+                    document.getElementById('confidenceThresholdValue').innerText = val;
+                }
+                if (settings.rag_limit) {
+                    document.getElementById('settingRagLimit').value = settings.rag_limit;
+                }
+            } catch (err) {
+                console.error("Failed to fetch settings:", err);
+            }
+        }
+
+        // 設定の保存
+        async function saveSettings() {
+            const model_name = document.getElementById('settingModelName').value;
+            const thinking_level = document.getElementById('settingThinkingLevel').value;
+            const confidence_threshold = document.getElementById('settingConfidenceThreshold').value;
+            const rag_limit = document.getElementById('settingRagLimit').value;
+
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        settings: {
+                            model_name,
+                            thinking_level,
+                            confidence_threshold,
+                            rag_limit
+                        }
+                    })
+                });
+                
+                if (res.ok) {
+                    showToast("設定を更新しました", "success");
+                } else {
+                    showToast("設定の更新に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("設定保存時に通信エラーが発生しました", "error");
+            }
+        }
+
+        // フォルダ名の変更
+        async function renameFolder(event, folderId, currentName) {
+            // 親要素の onclick イベント（フォルダ選択）が発火するのを防ぐ
+            event.stopPropagation();
+
+            const newName = prompt(`フォルダ「${currentName}」の新しい名前を入力してください:`, currentName);
+            if (newName === null) return; // キャンセルされた場合
+            if (!newName.trim()) {
+                showToast("フォルダ名は空にできません", "error");
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/folders/${folderId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName.trim() })
+                });
+
+                if (res.ok) {
+                    showToast("フォルダ名を更新しました", "success");
+                    await fetchFolders(); // フォルダツリーの再読み込み
+                    
+                    // もし現在選択中のフォルダの名前が変わったなら、見出し表示も更新する
+                    if (currentFolderId === folderId) {
+                        document.getElementById('currentFolderName').innerText = newName.trim();
+                    }
+                } else {
+                    const err = await res.json();
+                    showToast(err.detail || "フォルダ名の更新に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // フォルダの削除
+        async function deleteFolder(event, folderId, folderName) {
+            // 親要素の onclick イベント（フォルダ選択）が発火するのを防ぐ
+            event.stopPropagation();
+
+            const confirmDelete = confirm(`フォルダ「${folderName}」を削除しますか？`);
+            if (!confirmDelete) return;
+
+            const deleteNotes = confirm(`フォルダ「${folderName}」内のノートもすべて完全に削除しますか？\n（[OK]でノートも削除、[キャンセル]でノートは「📥 インボックス」に移動します）`);
+
+            try {
+                const url = `/api/folders/${folderId}?delete_notes=${deleteNotes}`;
+                const res = await fetch(url, {
+                    method: 'DELETE'
+                });
+
+                if (res.ok) {
+                    showToast("フォルダを削除しました", "success");
+                    await fetchFolders(); // フォルダリスト再取得
+                    await updateInboxBadge(); // インボックスのバッジ更新 (退避された場合に増えるため)
+                    
+                    // もし現在選択中のフォルダが削除されたなら、インボックスに戻す
+                    if (currentFolderId === folderId) {
+                        await selectFolder('inbox');
+                    } else {
+                        // それ以外のフォルダが削除された場合、表示中のノートがそのフォルダのものでないか確認
+                        if (currentFolderId !== 'inbox') {
+                            await fetchNotes(); // リスト再描画
+                        }
+                    }
+                } else {
+                    const err = await res.json();
+                    showToast(err.detail || "フォルダの削除に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // 新規ノート作成
+        async function createNewNote() {
+            if (currentFolderId === 'inbox') {
+                showToast("インボックス内には直接ノートを作成できません", "error");
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/folders/${currentFolderId}/notes`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: "無題のノート" })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    showToast("ノートを作成しました", "success");
+                    await fetchNotes(); // ノート一覧の更新
+                    selectNote(data.note_id); // 新規ノートを選択
+                } else {
+                    const err = await res.json();
+                    showToast(err.detail || "ノートの作成に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // ノートタイトルの変更
+        async function renameNote(event, noteId, currentTitle) {
+            event.stopPropagation();
+            const newTitle = prompt("ノートの新しいタイトルを入力してください:", currentTitle);
+            if (newTitle === null) return; // キャンセルされた場合
+            if (!newTitle.trim()) {
+                showToast("タイトルは空にできません", "error");
+                return;
+            }
+
+            const note = notes.find(n => n.id === noteId);
+            if (!note) return;
+
+            try {
+                const res = await fetch(`/api/notes/${noteId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: newTitle.trim(),
+                        raw_text: note.raw_text || '',
+                        ai_summary: note.ai_summary || '',
+                        ai_tags: note.ai_tags || '',
+                        parent_folder_id: note.parent_folder_id
+                    })
+                });
+
+                if (res.ok) {
+                    showToast("ノートタイトルを更新しました", "success");
+                    await fetchNotes();
+                    if (currentNoteId === noteId) {
+                        document.getElementById('detailTitle').value = newTitle.trim();
+                    }
+                } else {
+                    showToast("タイトルの更新に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // ノートの削除 (リスト側から直接)
+        async function deleteNoteFromList(event, noteId, title) {
+            event.stopPropagation();
+            if (!confirm(`本当にノート「${title}」を完全に削除しますか？\n（画像ファイルやベクトルデータも物理削除されます）`)) return;
+
+            try {
+                const res = await fetch(`/api/notes/${noteId}`, { method: 'DELETE' });
+                if (res.ok) {
+                    showToast("ノートを削除しました", "success");
+                    if (currentNoteId === noteId) {
+                        document.getElementById('detailView').classList.add('hidden');
+                        currentNoteId = null;
+                    }
+                    await fetchNotes();
+                    await updateInboxBadge();
+                } else {
+                    showToast("削除に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+    </script>
+</body>
+</html>
