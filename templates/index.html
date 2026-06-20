@@ -115,14 +115,14 @@
                     </button>
                 </div>
                 
-                <!-- インボックス (固定) - 廃止のため非表示 -->
-                <div class="px-2 py-2 hidden">
+                <!-- 仮置き（自動整理） (固定) -->
+                <div class="px-2 py-2">
                     <div id="folder-inbox" onclick="selectFolder('inbox')" 
                          class="flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-900 hover:text-slate-900 dark:hover:text-white cursor-pointer transition"
                          ondragover="allowDrop(event)" ondrop="handleFolderDrop(event, 'inbox')">
                         <div class="flex items-center space-x-2.5">
                             <i data-lucide="inbox" class="w-5 h-5 text-indigo-500 dark:text-indigo-400"></i>
-                            <span class="text-sm font-medium">📥 インボックス</span>
+                            <span class="text-sm font-medium">📥 仮置き（自動整理）</span>
                         </div>
                         <span id="badge-inbox" class="text-xs font-semibold px-2 py-0.5 bg-indigo-500/20 text-indigo-600 dark:text-indigo-300 rounded-full hidden">0</span>
                     </div>
@@ -555,17 +555,10 @@
                 renderFolders();
                 updateInboxBadge();
 
-                // フォルダの自動選択（inbox以外で最初のフォルダ）
-                const validFolders = folders.filter(f => f.id !== 'inbox');
-                if (validFolders.length > 0 && currentFolderId === null) {
-                    await selectFolder(validFolders[0].id);
-                } else if (validFolders.length === 0) {
-                    currentFolderId = null;
-                    const container = document.getElementById('noteList');
-                    container.innerHTML = '<div class="text-center text-slate-500 text-xs py-8">フォルダを作成してください</div>';
-                    document.getElementById('currentFolderName').innerText = 'フォルダがありません';
-                    document.getElementById('newNoteBtn').classList.add('hidden');
-                } else if (currentFolderId) {
+                // フォルダの自動選択（デフォルトは inbox）
+                if (currentFolderId === null) {
+                    await selectFolder('inbox');
+                } else {
                     await selectFolder(currentFolderId);
                 }
             } catch (err) {
@@ -645,7 +638,7 @@
             document.getElementById('detailView').classList.add('hidden');
             document.getElementById('searchView').classList.add('hidden');
             
-            if (folderId && folderId !== 'inbox') {
+            if (folderId) {
                 document.getElementById('newNoteBtn').classList.remove('hidden');
             } else {
                 document.getElementById('newNoteBtn').classList.add('hidden');
@@ -1461,7 +1454,7 @@
             const confirmDelete = confirm(`フォルダ「${folderName}」を削除しますか？`);
             if (!confirmDelete) return;
 
-            const deleteNotes = confirm(`フォルダ「${folderName}」内のノートもすべて完全に削除しますか？\n（[OK]でノートも削除、[キャンセル]でノートは「📥 インボックス」に移動します）`);
+            const deleteNotes = confirm(`フォルダ「${folderName}」内のノートもすべて完全に削除しますか？\n（[OK]でノートも削除、[キャンセル]でノートは「📥 仮置き（自動整理）」に移動します）`);
 
             try {
                 const url = `/api/folders/${folderId}?delete_notes=${deleteNotes}`;
@@ -1494,10 +1487,6 @@
 
         // 新規ノート作成
         async function createNewNote() {
-            if (currentFolderId === 'inbox') {
-                showToast("インボックス内には直接ノートを作成できません", "error");
-                return;
-            }
 
             try {
                 const res = await fetch(`/api/folders/${currentFolderId}/notes`, {

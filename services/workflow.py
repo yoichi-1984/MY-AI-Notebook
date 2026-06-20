@@ -301,6 +301,11 @@ async def process_new_image_workflow(note_id: str, image_id: str):
         merged_ocr_text = "\n\n".join(all_ocr_texts)
 
         # 5. ノート全体の再構造化 (要約・タグ・タイトル)
+        if note.get("parent_folder_id") == "inbox":
+            # 仮置き（自動整理）フォルダ所属の場合は、画像OCR完了時点で自動仕分けパイプラインへ移譲
+            await async_pipeline_workflow(note_id)
+            return
+
         recent_titles = sqlite_client.get_recent_titles(limit=100)
         existing_titles_str = ", ".join(recent_titles) if recent_titles else "（まだ既存タイトルはありません）"
 

@@ -9,91 +9,141 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+LATEST_VERSION = 2
+
+def get_db_version(conn) -> int:
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA user_version")
+    return cursor.fetchone()[0]
+
+def set_db_version(conn, version: int):
+    conn.execute(f"PRAGMA user_version = {version}")
+
 def init_db():
     with get_connection() as conn:
-        cursor = conn.cursor()
-        # folders テーブルの作成
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS folders (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                parent_id TEXT
-            )
-        """)
-        # notes テーブルの作成
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS notes (
-                id TEXT PRIMARY KEY,
-                parent_folder_id TEXT NOT NULL,
-                title TEXT,
-                raw_text TEXT NOT NULL,
-                image_path TEXT,
-                ai_ocr_text TEXT,
-                ai_summary TEXT,
-                ai_tags TEXT,
-                status TEXT NOT NULL,
-                updated_at TIMESTAMP NOT NULL,
-                FOREIGN KEY (parent_folder_id) REFERENCES folders (id)
-            )
-        """)
-
-        # note_images テーブルの作成
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS note_images (
-                id TEXT PRIMARY KEY,
-                note_id TEXT NOT NULL,
-                image_path TEXT NOT NULL,
-                ai_ocr_text TEXT,
-                created_at TIMESTAMP NOT NULL,
-                FOREIGN KEY (note_id) REFERENCES notes (id)
-            )
-        """)
+        current_version = get_db_version(conn)
         
-        # 初回起動時にインボックスフォルダを作成
-        cursor.execute("SELECT id FROM folders WHERE id = 'inbox'")
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO folders (id, name, parent_id) VALUES ('inbox', '📥 インボックス', NULL)")
-
-        # settings テーブルの作成
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        """)
+        # 既存DB（バージョン管理導入前）の自動バージョン判定
+        if current_version == 0:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'")
+            has_notes = cursor.fetchone() is not None
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='note_images'")
+            has_note_images = cursor.fetchone() is not None
+            
+            if has_notes:
+                if has_note_images:
+                    current_version = 2
+                else:
+                    current_version = 1
+                set_db_version(conn, current_version)
+                conn.commit()
         
-        # デフォルト設定の初期登録
-        default_settings = {
-            "thinking_level": "standard",
-            "model_name": "gemini-3.5-flash",
-            "confidence_threshold": "0.7",
-            "rag_limit": "5"
-        }
-        for k, v in default_settings.items():
-            cursor.execute("SELECT key, value FROM settings WHERE key = ?", (k,))
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (k, v))
+        while current_version < LATEST_VERSION:
+            next_version = current_version + 1
+            
+            # 明示的なトランザクションの開始
+            conn.execute("BEGIN")
+            try:
+                cursor = conn.cursor()
+                if next_version == 1:
+                    # folders テーブルの作成
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS folders (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            parent_id TEXT
+                        )
+                    """)
+                    # notes テーブルの作成
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS notes (
+                            id TEXT PRIMARY KEY,
+                            parent_folder_id TEXT NOT NULL,
+                            title TEXT,
+                            raw_text TEXT NOT NULL,
+                            image_path TEXT,
+                            ai_ocr_text TEXT,
+                            ai_summary TEXT,
+                            ai_tags TEXT,
+                            status TEXT NOT NULL,
+                            updated_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (parent_folder_id) REFERENCES folders (id)
+                        )
+                    """)
+                    # note_images テーブルの作成
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS note_images (
+                            id TEXT PRIMARY KEY,
+                            note_id TEXT NOT NULL,
+                            image_path TEXT NOT NULL,
+                            ai_ocr_text TEXT,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (note_id) REFERENCES notes (id)
+                        )
+                    """)
+                    
+                    # 初回起動時にインボックスフォルダを作成
+                    cursor.execute("SELECT id FROM folders WHERE id = 'inbox'")
+                    if not cursor.fetchone():
+                        cursor.execute("INSERT INTO folders (id, name, parent_id) VALUES ('inbox', '📥 インボックス', NULL)")
 
-
-        # 既存データの移行 (notes.image_path -> note_images)
-        cursor.execute("PRAGMA table_info(notes)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "image_path" in columns:
-            cursor.execute("SELECT id, image_path, ai_ocr_text, updated_at FROM notes WHERE image_path IS NOT NULL AND image_path != ''")
-            notes_with_images = cursor.fetchall()
-            for row in notes_with_images:
-                n_id, img_path, ocr_txt, updated_at = row
-                # すでに移行済みかチェック
-                cursor.execute("SELECT id FROM note_images WHERE note_id = ? AND image_path = ?", (n_id, img_path))
-                if not cursor.fetchone():
-                    img_id = str(uuid.uuid4())
-                    cursor.execute(
-                        "INSERT INTO note_images (id, note_id, image_path, ai_ocr_text, created_at) VALUES (?, ?, ?, ?, ?)",
-                        (img_id, n_id, img_path, ocr_txt, updated_at)
-                    )
-
-        conn.commit()
+                    # settings テーブルの作成
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS settings (
+                            key TEXT PRIMARY KEY,
+                            value TEXT NOT NULL
+                        )
+                    """)
+                    
+                    # デフォルト設定の初期登録
+                    default_settings = {
+                        "thinking_level": "standard",
+                        "model_name": "gemini-3.5-flash",
+                        "confidence_threshold": "0.7",
+                        "rag_limit": "5"
+                    }
+                    for k, v in default_settings.items():
+                        cursor.execute("SELECT key, value FROM settings WHERE key = ?", (k,))
+                        if not cursor.fetchone():
+                            cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (k, v))
+                
+                elif next_version == 2:
+                    # 既存データの移行 (notes.image_path -> note_images)
+                    cursor.execute("PRAGMA table_info(notes)")
+                    columns = [row[1] for row in cursor.fetchall()]
+                    if "image_path" in columns:
+                        cursor.execute("SELECT id, image_path, ai_ocr_text, updated_at FROM notes WHERE image_path IS NOT NULL AND image_path != ''")
+                        notes_with_images = cursor.fetchall()
+                        for row in notes_with_images:
+                            n_id, img_path, ocr_txt, updated_at = row
+                            # すでに移行済みかチェック
+                            cursor.execute("SELECT id FROM note_images WHERE note_id = ? AND image_path = ?", (n_id, img_path))
+                            if not cursor.fetchone():
+                                img_id = str(uuid.uuid4())
+                                cursor.execute(
+                                    "INSERT INTO note_images (id, note_id, image_path, ai_ocr_text, created_at) VALUES (?, ?, ?, ?, ?)",
+                                    (img_id, n_id, img_path, ocr_txt, updated_at)
+                                )
+                
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise RuntimeError(f"Database migration to version {next_version} failed: {e}")
+            
+            # トランザクション外で user_version を設定
+            set_db_version(conn, next_version)
+            current_version = next_version
+            
+        # 'inbox' フォルダの名前を「仮置き（自動整理）」へ確実に統一更新
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM folders WHERE id = 'inbox'")
+            if not cursor.fetchone():
+                cursor.execute("INSERT INTO folders (id, name, parent_id) VALUES ('inbox', '📥 仮置き（自動整理）', NULL)")
+            else:
+                cursor.execute("UPDATE folders SET name = '📥 仮置き（自動整理）' WHERE id = 'inbox'")
+            conn.commit()
 
 def create_folder(name: str, parent_id: str = None) -> str:
     folder_id = str(uuid.uuid4())

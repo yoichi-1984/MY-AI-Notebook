@@ -216,12 +216,15 @@ class NoteUpdate(BaseModel):
     ai_tags: str
     parent_folder_id: str
 
-# 7. ノート手動編集 (ベクトル再計算をキック)
+# 7. ノート手動編集 (ベクトル再計算または自動仕分けをキック)
 @app.put("/api/notes/{note_id}")
 def update_note(note_id: str, note_data: NoteUpdate, background_tasks: BackgroundTasks):
     note = sqlite_client.get_note(note_id)
     if not note:
         raise HTTPException(status_code=404, detail="ノートが見つかりません。")
+        
+    is_inbox = note_data.parent_folder_id == "inbox"
+    status_str = "processing" if is_inbox else "completed"
         
     sqlite_client.update_note_metadata(
         note_id=note_id,
@@ -230,16 +233,20 @@ def update_note(note_id: str, note_data: NoteUpdate, background_tasks: Backgroun
         ai_summary=note_data.ai_summary,
         ai_tags=note_data.ai_tags,
         parent_folder_id=note_data.parent_folder_id,
-        status="completed"
+        status=status_str
     )
     
     # 本文（raw_text）の更新も行う
     sqlite_client.update_note_content(note_id, note_data.raw_text)
     
-    # バックグラウンドでベクトル再計算
-    background_tasks.add_task(workflow.recalculate_vector_on_edit, note_id)
-    
-    return {"status": "updated", "note_id": note_id}
+    if is_inbox:
+        # 仮置き（自動整理）フォルダ所属の場合は自動仕分けをバックグラウンド実行
+        background_tasks.add_task(workflow.async_pipeline_workflow, note_id)
+        return {"status": "processing", "note_id": note_id}
+    else:
+        # 通常フォルダ所属の場合は単にベクトル再計算
+        background_tasks.add_task(workflow.recalculate_vector_on_edit, note_id)
+        return {"status": "updated", "note_id": note_id}
 
 # 7.5. ノートへの画像添付・追加 (ノンブロッキング)
 @app.post("/api/notes/{note_id}/image", status_code=status.HTTP_202_ACCEPTED)
