@@ -69,7 +69,7 @@ graph TD
         Workflow["workflow.py<br/>(非同期ジョブ処理)"]
         Agent["ai_agent.py<br/>(AI連携制御)"]
         
-        Main -->|1. 受付完了 (202 Accepted)| UI
+        Main -->|"1. 受付完了 (202 Accepted)"| UI
         Main -->|2. バックグラウンド委任| Workflow
         Workflow --> Parser
         Workflow --> Agent
