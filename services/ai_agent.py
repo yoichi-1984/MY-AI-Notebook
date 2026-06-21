@@ -135,7 +135,7 @@ def generate_content_via_rest(contents_list, model_name="gemini-3.5-flash", resp
         print(f"REST API call failed: {e}")
         raise e
 
-def generate_content_with_fallback(contents, response_schema=None, system_instruction=None):
+def generate_content_with_fallback(contents, response_schema=None, system_instruction=None, model_name=None, thinking_level=None):
     """
     認証情報の種類に応じて、Vertex AI SDK → REST API → APIキー の順で呼び出しを行います。
     """
@@ -144,18 +144,18 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
     from google.oauth2 import service_account
     from database import sqlite_client
 
-    db_model_name = sqlite_client.get_setting("model_name", "gemini-3.5-flash")
-    thinking_level = sqlite_client.get_setting("thinking_level", "medium")
-    if thinking_level not in ["minimal", "low", "medium", "high"]:
-        thinking_level = "medium"
+    db_model_name = model_name if model_name is not None else sqlite_client.get_setting("model_name", "gemini-3.5-flash")
+    requested_thinking_level = thinking_level if thinking_level is not None else sqlite_client.get_setting("thinking_level", "medium")
+    if requested_thinking_level not in ["minimal", "low", "medium", "high"]:
+        requested_thinking_level = "medium"
 
-    print(f"[AI Agent] Generating content using model {db_model_name} with thinking_level={thinking_level}")
+    print(f"[AI Agent] Generating content using model {db_model_name} with thinking_level={requested_thinking_level}")
 
     # ThinkingConfig を enum で生成
     thinking_config = None
     if hasattr(types, "ThinkingConfig") and hasattr(types, "ThinkingLevel"):
         try:
-            level_enum = types.ThinkingLevel(thinking_level.upper())
+            level_enum = types.ThinkingLevel(requested_thinking_level.upper())
             thinking_config = types.ThinkingConfig(thinking_level=level_enum)
         except Exception as e:
             print(f"[AI Agent] Failed to create ThinkingConfig: {e}")
@@ -225,7 +225,7 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
                 model_name=db_model_name,
                 response_schema=response_schema,
                 system_instruction=system_instruction,
-                thinking_level=thinking_level
+                thinking_level=requested_thinking_level
             )
             class MockResponse:
                 def __init__(self, text, schema=None):
@@ -412,6 +412,9 @@ def analyze_and_structure_with_gemini(image_bytes: bytes, raw_text: str, folder_
             contents=contents,
             response_schema=NoteStructuringSchema
         )
+        # REST APIフォールバック時にJSONパースが失敗すると parsed=None になるため明示チェック
+        if response is None or response.parsed is None:
+            raise ValueError("AI response parsing failed: parsed result is None")
         return response.parsed
     except Exception as e:
         error_msg = f"[GCP/Gemini 構造化仕分けエラー] {e}"
@@ -475,7 +478,11 @@ def generate_rag_response(query: str, search_results: list[dict]) -> str:
     system_instruction = f"""
     あなたはユーザーが持つローカルナレッジベースに基づいて回答する超優秀なAIアシスタントです。
     提供される【コンテキスト】の内容のみを「唯一の絶対的なソース（事実）」として、ユーザーの質問に日本語で回答してください。
-    提供された情報から直接的・間接的に判断できない場合は、絶対に知ったかぶりや推測をせず、「提供されたナレッジからは分かりませんでした」と明確に回答してください。
+    
+    【厳格ルール】
+    1. 提供された各ノート（チャンク）について、それがユーザーの質問に回答するために本当に関連しているか、役に立つかを個別に評価してください。
+    2. 質問と関連がない、または役に立たないと判断したコンテキストの情報は、回答の生成において完全に無視してください。
+    3. 提供された情報から直接的・間接的に判断できない場合は、絶対に知ったかぶりや推測をせず、「提供されたナレッジからは分かりませんでした」と明確に回答してください。
     
     【コンテキスト】
     {context}
@@ -496,3 +503,38 @@ def generate_rag_response(query: str, search_results: list[dict]) -> str:
             f"検索にヒットしたコンテキスト概要:\n{notes_summary}"
         )
 stream = False
+
+def optimize_search_query(query: str) -> str:
+    """
+    ユーザーの検索クエリを高速モデル gemini-3.1-flash-lite と thinking_level='minimal' で最適化する。
+    """
+    if not has_any_credentials():
+        print("Warning: No Gemini/Vertex credentials set. Returning raw query.")
+        return query
+
+    system_instruction = (
+        "あなたは検索クエリの最適化アシスタントです。ユーザーの質問を分析し、"
+        "ベクトルDBや全文検索で最もヒットしやすい、半角スペース区切りのシンプルな検索用キーワードのみを出力してください。"
+        "余計な説明や前置き、解説、マークダウン記法等は一切含めず、純粋な検索キーワードだけを出力してください。"
+    )
+    
+    try:
+        response = generate_content_with_fallback(
+            contents=query,
+            model_name="gemini-3.1-flash-lite",
+            system_instruction=system_instruction,
+            thinking_level="minimal"
+        )
+        if response and hasattr(response, "text") and response.text:
+            optimized_q = response.text.strip()
+            # コードブロックで囲まれている場合のクリーンアップ
+            if optimized_q.startswith("```"):
+                lines = optimized_q.split("\n")
+                if len(lines) > 2:
+                    optimized_q = " ".join(lines[1:-1])
+            return optimized_q if optimized_q else query
+        return query
+    except Exception as e:
+        print(f"[Query Optimization Error] {e}. Falling back to raw query.")
+        return query
+

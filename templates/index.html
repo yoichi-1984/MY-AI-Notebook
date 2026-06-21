@@ -92,8 +92,14 @@
                     <i data-lucide="search" class="w-4 h-4"></i>
                 </span>
                 <input id="searchInput" type="text" placeholder="ハイブリッド検索 ＆ AIに質問する..." 
+                       onkeydown="if (event.key === 'Enter') performSearch()"
                        class="w-full pl-10 pr-4 py-2 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm text-slate-800 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition">
             </div>
+            <!-- 検索結果へ戻るボタン（通常は非表示） -->
+            <button id="btnBackToSearch" onclick="backToSearchView()" class="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded-lg text-sm font-medium flex items-center space-x-1 shrink-0 transition hidden" title="直近のAI質問結果に戻る">
+                <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                <span>検索結果へ戻る</span>
+            </button>
             <button onclick="performSearch()" class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-medium flex items-center space-x-1 shrink-0 transition shadow-lg shadow-brand-500/20">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
                 <span>AI質問</span>
@@ -153,12 +159,18 @@
                     <button id="newNoteBtn" onclick="createNewNote()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-505 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 rounded transition hidden" title="新規ノート作成">
                         <i data-lucide="plus" class="w-4 h-4"></i>
                     </button>
+                    <button id="importNoteBtn" onclick="triggerImportFile()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-505 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 rounded transition hidden" title="ドキュメントインポート">
+                        <i data-lucide="upload" class="w-4 h-4"></i>
+                    </button>
+                    <input type="file" id="importFileInput" onchange="handleImportFileSelect(event)" accept=".pdf,.pptx,.ppt,.docx,.xlsx,.xlsm,.xls,.txt,.md" style="display: none;">
                 </div>
                 <span id="noteCount" class="text-xs text-slate-550 dark:text-slate-500 font-mono">0 件</span>
             </div>
             
             <!-- ノートリスト -->
-            <div id="noteList" class="flex-1 overflow-y-auto p-2 space-y-2">
+            <div id="noteList" class="flex-1 overflow-y-auto p-2 space-y-2"
+                 ondragover="allowDrop(event)"
+                 ondrop="handleNoteListDrop(event)">
                 <!-- 動的生成 -->
                 <div class="text-center text-slate-500 text-xs py-8">フォルダを選択してください</div>
             </div>
@@ -203,6 +215,17 @@
                             </button>
                         </div>
                     </div>
+                </div>
+
+                <!-- 複数ページ（タブ）コンテナ -->
+                <div class="px-6 py-1.5 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between shrink-0 overflow-x-auto">
+                    <div id="pageTabsContainer" class="flex items-center space-x-1.5 overflow-x-auto pr-4 scrollbar-none">
+                        <!-- 動的生成されるページタブ -->
+                    </div>
+                    <!-- ページ追加ボタン -->
+                    <button onclick="addNewPage()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 rounded transition shrink-0" title="新しいページを追加">
+                        <i data-lucide="plus" class="w-4 h-4"></i>
+                    </button>
                 </div>
 
                 <!-- タブヘッダー -->
@@ -253,6 +276,49 @@
                             <input type="file" id="imageFileInput" accept="image/*" class="hidden" onchange="handleImageFileSelect(event)">
                         </div>
 
+                        <!-- 参考URL (URLメモ) -->
+                        <div id="detailUrlsWrapper" class="space-y-2 bg-slate-100/50 dark:bg-slate-900/30 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800/60">
+                            <div class="flex items-center space-x-1.5 mb-1">
+                                <i data-lucide="link" class="w-4 h-4 text-slate-500 dark:text-slate-400"></i>
+                                <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">参考URL</span>
+                            </div>
+                            <!-- 追加されたURLのリスト -->
+                            <div id="detailUrlsContainer" class="flex flex-wrap gap-2 empty:hidden">
+                                <!-- JSで動的にバッジが生成される -->
+                            </div>
+                            <!-- URL追加用インプット -->
+                            <div class="flex items-center space-x-2 pt-1">
+                                <input type="text" id="detailNewUrl" 
+                                       class="flex-1 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-800 dark:text-slate-300 focus:outline-none focus:border-brand-500 dark:focus:border-brand-500 transition" 
+                                       placeholder="https://example.com"
+                                       onkeydown="if(event.key === 'Enter') addUrlToList()">
+                                <button onclick="addUrlToList()" 
+                                        class="px-3.5 py-1.5 bg-brand-500 hover:bg-brand-600 active:bg-brand-700 text-white rounded-lg text-xs font-semibold transition flex items-center space-x-1 shadow-sm">
+                                    <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                                    <span>追加</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 添付ファイル (一般ファイル) -->
+                        <div id="detailAttachmentsWrapper" class="space-y-2">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">添付ファイル</span>
+                                <button onclick="triggerAttachmentFileInput()" class="text-[10px] font-semibold text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 flex items-center space-x-1 py-1 px-2.5 bg-brand-500/10 hover:bg-brand-500/20 rounded-lg transition" title="ファイルを添付する">
+                                    <i data-lucide="paperclip" class="w-3.5 h-3.5"></i>
+                                    <span>ファイルを添付</span>
+                                </button>
+                            </div>
+                            
+                            <!-- 添付ファイル一覧コンテナ -->
+                            <div id="detailAttachmentsContainer" class="grid grid-cols-1 sm:grid-cols-2 gap-3 empty:hidden">
+                                <!-- 添付されたファイルがJSで動的生成される -->
+                            </div>
+
+                            <!-- 隠しファイルインプット -->
+                            <input type="file" id="attachmentFileInput" accept=".pdf,.pptx,.ppt,.docx,.xlsx,.xlsm,.xls,.txt,.md" class="hidden" onchange="handleAttachmentFileSelect(event)">
+                        </div>
+
                         <!-- 生テキスト (エディタ) -->
                         <div>
                             <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block mb-2">生テキスト / メモ本文</span>
@@ -285,6 +351,17 @@
                         <div id="detailOcrContainer" class="hidden">
                             <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block mb-2">画像から抽出した生OCRテキスト</span>
                             <pre id="detailOcrText" class="w-full p-4 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-900 rounded-xl text-xs text-slate-600 dark:text-slate-400 font-mono overflow-x-auto whitespace-pre-wrap"></pre>
+                        </div>
+
+                        <!-- 添付ファイルのAI解析結果 (読み取り専用) -->
+                        <div id="detailAttachmentAiContainer" class="hidden space-y-3">
+                            <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                                <i data-lucide="paperclip" class="w-3.5 h-3.5"></i>
+                                添付ファイルのAI解析結果
+                            </span>
+                            <div id="detailAttachmentAiList" class="space-y-3">
+                                <!-- JSで動的生成 -->
+                            </div>
                         </div>
                         
                         <!-- 仕分け保留 (pending_review) 時の手動フォルダ決定UI -->
@@ -416,6 +493,21 @@
                             <input type="number" id="settingRagLimit" min="1" max="20" value="5" onchange="saveSettings()"
                                    class="w-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm px-3 py-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-brand-500">
                         </div>
+
+                        <!-- RAG検索足切り閾値 (コサイン距離) -->
+                        <div class="space-y-2">
+                            <div class="flex justify-between items-center">
+                                <label for="settingRagThreshold" class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">RAG検索足切り閾値 (コサイン距離)</label>
+                                <span id="ragThresholdValue" class="text-xs font-mono font-bold text-brand-600 dark:text-brand-400">0.8</span>
+                            </div>
+                            <input type="range" id="settingRagThreshold" min="0.1" max="1.0" step="0.05" value="0.8" 
+                                   oninput="document.getElementById('ragThresholdValue').innerText = this.value"
+                                   onchange="saveSettings()"
+                                   class="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-brand-600 dark:accent-brand-400">
+                            <p class="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+                                値が小さいほど類似度が高いものだけを厳格に抽出し、1.0にするとすべての候補を採用します。
+                            </p>
+                        </div>
                     </div>
 
                 </div>
@@ -440,6 +532,9 @@
         let notes = [];
         let currentFolderId = null;
         let currentNoteId = null;
+        let currentNote = null;
+        let currentUrls = [];
+        let currentPageId = null;
         let ws = null;
         
         // 直前の右カラム表示状態のキャッシュ (設定画面を開いた後に復元するため)
@@ -642,7 +737,7 @@
         }
 
         // フォルダ選択
-        async function selectFolder(folderId) {
+        async function selectFolder(folderId, keepBackBtn = false) {
             if (currentFolderId !== folderId && currentNoteId) {
                 const action = await checkUnsavedChanges();
                 if (action === 'cancel') {
@@ -663,11 +758,16 @@
             document.getElementById('dropZone').classList.remove('hidden');
             document.getElementById('detailView').classList.add('hidden');
             document.getElementById('searchView').classList.add('hidden');
+            if (!keepBackBtn) {
+                document.getElementById('btnBackToSearch').classList.add('hidden');
+            }
             
             if (folderId) {
                 document.getElementById('newNoteBtn').classList.remove('hidden');
+                document.getElementById('importNoteBtn').classList.remove('hidden');
             } else {
                 document.getElementById('newNoteBtn').classList.add('hidden');
+                document.getElementById('importNoteBtn').classList.add('hidden');
             }
 
             // フォルダ名表示
@@ -793,28 +893,32 @@
             lucide.createIcons();
         }
 
+        // 現在アクティブなページに変更があるかチェックするヘルパー
+        function hasUnsavedChangesForCurrentPage() {
+            if (!currentNoteId || !currentNote) return false;
+            
+            const currentRawTextEl = document.getElementById('detailRawText');
+            const currentTitleEl = document.getElementById('detailTitle');
+            
+            const currentPage = (currentNote.pages || []).find(p => p.id === currentPageId);
+            const pageRawText = currentPage ? currentPage.raw_text : '';
+
+            const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
+            const hasTextChanges = (normalizeText(currentRawTextEl.value) !== normalizeText(pageRawText));
+            const hasTitleChanges = (currentTitleEl.value.trim() !== (currentNote.title || '').trim());
+
+            return hasTextChanges || hasTitleChanges;
+        }
+
         // 未保存の変更があるかチェックし、あればカスタムモーダルを表示してユーザーの決定を待つ
         function checkUnsavedChanges() {
             return new Promise((resolve) => {
-                if (!currentNoteId) {
+                if (!currentNoteId || !currentNote) {
                     resolve('proceed');
                     return;
                 }
 
-                const currentRawTextEl = document.getElementById('detailRawText');
-                const currentTitleEl = document.getElementById('detailTitle');
-                const currentNote = notes.find(n => n.id === currentNoteId);
-
-                if (!currentNote) {
-                    resolve('proceed');
-                    return;
-                }
-
-                const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
-                const hasUnsavedChanges = (normalizeText(currentRawTextEl.value) !== normalizeText(currentNote.raw_text));
-                const hasUnsavedTitle = (currentTitleEl.value.trim() !== (currentNote.title || '').trim());
-
-                if (!hasUnsavedChanges && !hasUnsavedTitle) {
+                if (!hasUnsavedChangesForCurrentPage()) {
                     resolve('proceed');
                     return;
                 }
@@ -836,7 +940,7 @@
 
                 btnSave.onclick = async () => {
                     cleanup();
-                    await saveNoteChanges();
+                    await savePageChanges();
                     resolve('proceed');
                 };
 
@@ -853,7 +957,7 @@
         }
 
         // ノート詳細の選択
-        async function selectNote(noteId, forceOverwriteText = false) {
+        async function selectNote(noteId, forceOverwriteText = false, targetPageId = null) {
             if (forceOverwriteText && currentNoteId && currentNoteId !== noteId) {
                 const action = await checkUnsavedChanges();
                 if (action === 'cancel') {
@@ -876,101 +980,354 @@
                 if (!res.ok) throw new Error("Note not found");
                 const note = await res.json();
                 
-                // DOMへの埋め込み
-                document.getElementById('detailId').innerText = note.id;
-                document.getElementById('detailDate').innerText = formatDate(note.updated_at);
+                currentNote = note;
                 
-                // タイトル入力欄の上書き制御
-                const titleEl = document.getElementById('detailTitle');
-                const isEditingTitle = (document.activeElement === titleEl);
-                const hasUnsavedTitle = (titleEl.value.trim() !== (note.title || '').trim());
+                // キャッシュ更新
+                const idx = notes.findIndex(n => n.id === noteId);
+                if (idx !== -1) notes[idx] = note;
                 
-                if (!forceOverwriteText && (isEditingTitle || hasUnsavedTitle)) {
-                    console.log("ユーザーがタイトル編集中のため、タイトルの上書きをスキップします。");
-                } else {
-                    titleEl.value = note.title || '';
+                const pages = note.pages || [];
+                if (pages.length === 0) {
+                    throw new Error("No pages in note");
                 }
                 
-                // メモ入力欄の上書き制御 (入力中または未保存の変更がある場合はスキップ)
-                const rawTextEl = document.getElementById('detailRawText');
-                const isEditing = (document.activeElement === rawTextEl);
-                const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
-                const hasUnsavedChanges = (normalizeText(rawTextEl.value) !== normalizeText(note.raw_text));
-
-                if (!forceOverwriteText && (isEditing || hasUnsavedChanges)) {
-                    console.log("ユーザーが編集中のため、メモ本文の上書きをスキップします。");
-                } else {
-                    rawTextEl.value = note.raw_text || '';
+                // ターゲットとなるページを決定
+                let activePageId = targetPageId;
+                if (!activePageId) {
+                    // 以前にこのノートでアクティブだったページがあるか確認
+                    const wasSameNote = (currentNoteId === noteId);
+                    activePageId = (wasSameNote && currentPageId && pages.some(p => p.id === currentPageId)) 
+                        ? currentPageId 
+                        : pages[0].id;
                 }
                 
-                document.getElementById('detailSummary').value = note.ai_summary || '';
-                document.getElementById('detailTags').value = note.ai_tags || '';
+                currentPageId = activePageId;
                 
-                // タグのパース
-                renderTagsList(note.ai_tags);
-
-                // 画像処理
-                const imgContainer = document.getElementById('detailImageContainer');
-                const imgPlaceholder = document.getElementById('detailImagePlaceholder');
-                imgContainer.innerHTML = '';
-
-                if (note.images && note.images.length > 0) {
-                    note.images.forEach(img => {
-                        const card = document.createElement('div');
-                        card.className = 'relative group rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 aspect-video flex justify-center items-center';
-                        card.innerHTML = `
-                            <img src="/${img.image_path}" alt="添付画像" class="max-h-full max-w-full object-contain cursor-zoom-in transition hover:scale-[1.02]" onclick="zoomSpecificImage('/${img.image_path}')">
-                            <!-- 個別削除ボタン -->
-                            <button onclick="deleteSpecificImage(event, '${img.id}')" 
-                                    class="absolute top-2 right-2 p-1.5 bg-slate-900/80 hover:bg-rose-600 rounded-lg text-white opacity-0 group-hover:opacity-100 transition shadow-lg" 
-                                    title="画像を削除">
-                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                            </button>
-                        `;
-                        imgContainer.appendChild(card);
-                    });
-
-                    // グリッド末尾の追加ボタン
-                    const addCard = document.createElement('div');
-                    addCard.className = 'border-2 border-dashed border-slate-300 dark:border-slate-800 hover:border-brand-500 dark:hover:border-brand-500 rounded-xl aspect-video flex flex-col justify-center items-center cursor-pointer transition text-slate-400 hover:text-brand-500';
-                    addCard.onclick = () => triggerImageFileInput();
-                    addCard.innerHTML = `
-                        <i data-lucide="image-plus" class="w-5 h-5 mb-1"></i>
-                        <span class="text-[10px] font-semibold">画像を追加</span>
-                    `;
-                    imgContainer.appendChild(addCard);
-
-                    imgContainer.classList.remove('hidden');
-                    imgPlaceholder.classList.add('hidden');
-                } else {
-                    imgContainer.classList.add('hidden');
-                    imgPlaceholder.classList.remove('hidden');
-                }
-
-                // OCRテキスト処理
-                const ocrContainer = document.getElementById('detailOcrContainer');
-                if (note.ai_ocr_text) {
-                    document.getElementById('detailOcrText').innerText = note.ai_ocr_text;
-                    ocrContainer.classList.remove('hidden');
-                } else {
-                    ocrContainer.classList.add('hidden');
-                }
-
-                // 仕分け保留のUI表示切替
-                const pendingUi = document.getElementById('pendingReviewUi');
-                if (note.status === 'pending_review') {
-                    pendingUi.classList.remove('hidden');
-                    populatePendingFoldersSelect();
-                } else {
-                    pendingUi.classList.add('hidden');
-                }
-
+                // ページ詳細データのレンダリング
+                await selectPage(currentPageId, forceOverwriteText);
+                
                 // デフォルトで「メモ＆画像」タブを表示
                 switchDetailTab('memo');
 
             } catch (err) {
+                console.error(err);
                 showToast("ノートの読み込みに失敗しました", "error");
             }
+        }
+
+        // ページの選択・ロード
+        async function selectPage(pageId, forceOverwriteText = false) {
+            if (!currentNoteId || !currentNote) return;
+
+            const page = (currentNote.pages || []).find(p => p.id === pageId);
+            if (!page) return;
+
+            currentPageId = pageId;
+
+            // ページタブのレンダリング
+            renderPageTabs(currentNote, pageId);
+
+            // DOMへの埋め込み
+            document.getElementById('detailId').innerText = `${currentNote.id.substring(0, 8)} / ${page.id.substring(0, 8)}`;
+            document.getElementById('detailDate').innerText = formatDate(currentNote.updated_at);
+            
+            // タイトル入力欄の上書き制御
+            const titleEl = document.getElementById('detailTitle');
+            const isEditingTitle = (document.activeElement === titleEl);
+            const hasUnsavedTitle = (titleEl.value.trim() !== (currentNote.title || '').trim());
+            
+            if (!forceOverwriteText && (isEditingTitle || hasUnsavedTitle)) {
+                console.log("ユーザーがタイトル編集中のため、タイトルの上書きをスキップします。");
+            } else {
+                titleEl.value = currentNote.title || '';
+            }
+            
+            // メモ入力欄の上書き制御 (入力中または未保存の変更がある場合はスキップ)
+            const rawTextEl = document.getElementById('detailRawText');
+            const isEditing = (document.activeElement === rawTextEl);
+            const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
+            const hasUnsavedChanges = (normalizeText(rawTextEl.value) !== normalizeText(page.raw_text));
+
+            if (!forceOverwriteText && (isEditing || hasUnsavedChanges)) {
+                console.log("ユーザーが編集中のため、メモ本文の上書きをスキップします。");
+            } else {
+                rawTextEl.value = page.raw_text || '';
+            }
+            
+            document.getElementById('detailSummary').value = page.ai_summary || '';
+            document.getElementById('detailTags').value = page.ai_tags || '';
+            
+            // タグのパース
+            renderTagsList(page.ai_tags);
+
+            // 参考URLのパースとレンダリング
+            currentUrls = page.reference_urls ? page.reference_urls.split('\n').filter(u => u.trim() !== '') : [];
+            renderUrlsList();
+
+            // 画像処理
+            const imgContainer = document.getElementById('detailImageContainer');
+            const imgPlaceholder = document.getElementById('detailImagePlaceholder');
+            imgContainer.innerHTML = '';
+
+            const pageImages = page.images || [];
+            if (pageImages.length > 0) {
+                pageImages.forEach(img => {
+                    const card = document.createElement('div');
+                    card.className = 'relative group rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 aspect-video flex justify-center items-center';
+                    card.innerHTML = `
+                        <img src="/${img.image_path}" alt="添付画像" class="max-h-full max-w-full object-contain cursor-zoom-in transition hover:scale-[1.02]" onclick="zoomSpecificImage('/${img.image_path}')">
+                        <!-- 個別削除ボタン -->
+                        <button onclick="deleteSpecificImage(event, '${img.id}')" 
+                                class="absolute top-2 right-2 p-1.5 bg-slate-900/80 hover:bg-rose-600 rounded-lg text-white opacity-0 group-hover:opacity-100 transition shadow-lg" 
+                                title="画像を削除">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                    `;
+                    imgContainer.appendChild(card);
+                });
+
+                // グリッド末尾の追加ボタン
+                const addCard = document.createElement('div');
+                addCard.className = 'border-2 border-dashed border-slate-300 dark:border-slate-800 hover:border-brand-500 dark:hover:border-brand-500 rounded-xl aspect-video flex flex-col justify-center items-center cursor-pointer transition text-slate-400 hover:text-brand-500';
+                addCard.onclick = () => triggerImageFileInput();
+                addCard.innerHTML = `
+                    <i data-lucide="image-plus" class="w-5 h-5 mb-1"></i>
+                    <span class="text-[10px] font-semibold">画像を追加</span>
+                `;
+                imgContainer.appendChild(addCard);
+
+                imgContainer.classList.remove('hidden');
+                imgPlaceholder.classList.add('hidden');
+            } else {
+                imgContainer.classList.add('hidden');
+                imgPlaceholder.classList.remove('hidden');
+            }
+
+            // 添付ファイルのレンダリング
+            renderAttachmentsList(page.attachments || []);
+
+            // OCRテキスト処理
+            const ocrContainer = document.getElementById('detailOcrContainer');
+            if (page.ai_ocr_text) {
+                document.getElementById('detailOcrText').innerText = page.ai_ocr_text;
+                ocrContainer.classList.remove('hidden');
+            } else {
+                ocrContainer.classList.add('hidden');
+            }
+
+            // 仕分け保留のUI表示切替
+            const pendingUi = document.getElementById('pendingReviewUi');
+            if (currentNote.status === 'pending_review') {
+                pendingUi.classList.remove('hidden');
+                populatePendingFoldersSelect();
+            } else {
+                pendingUi.classList.add('hidden');
+            }
+            
+            lucide.createIcons();
+        }
+
+        // ページタブのレンダリング
+        function renderPageTabs(note, activePageId) {
+            const container = document.getElementById('pageTabsContainer');
+            container.innerHTML = '';
+            
+            const pages = note.pages || [];
+            pages.forEach((page, index) => {
+                const isActive = page.id === activePageId;
+                const tab = document.createElement('div');
+                
+                if (isActive) {
+                    tab.className = 'flex items-center space-x-1.5 px-3 py-1 bg-white dark:bg-slate-800 border-t-2 border-brand-500 text-brand-600 dark:text-brand-400 rounded-t-md text-xs font-semibold shadow-sm cursor-pointer select-none shrink-0 transition duration-150';
+                } else {
+                    tab.className = 'flex items-center space-x-1.5 px-3 py-1 bg-slate-100/50 dark:bg-slate-900/50 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 rounded-t-md text-xs cursor-pointer select-none shrink-0 transition duration-150';
+                }
+                
+                // タブ名表示エリア
+                const titleSpan = document.createElement('span');
+                titleSpan.className = 'tab-title truncate max-w-[85px]';
+                titleSpan.innerText = page.page_name || `ページ${index + 1}`;
+                titleSpan.ondblclick = (e) => editPageTitle(e, page.id, titleSpan.innerText);
+                tab.appendChild(titleSpan);
+                
+                if (!isActive) {
+                    tab.onclick = () => {
+                        // 変更がある場合のみサイレント保存をバックグラウンド実行（待機しない）
+                        if (hasUnsavedChangesForCurrentPage()) {
+                            savePageChanges(false);
+                        }
+                        selectPage(page.id);
+                    };
+                }
+                
+                // 削除ボタン (複数ページある場合のみ表示)
+                if (pages.length > 1) {
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'p-0.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-rose-500 transition shrink-0';
+                    deleteBtn.innerHTML = '<i data-lucide="x" class="w-2.5 h-2.5"></i>';
+                    deleteBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        deletePageTab(page.id);
+                    };
+                    tab.appendChild(deleteBtn);
+                }
+                
+                container.appendChild(tab);
+            });
+            
+            // ドラッグ＆ドロップ並び替えの対応も簡易的に行えますが、今回は順序維持に留めます
+        }
+
+        // 新規ページ追加
+        async function addNewPage() {
+            if (!currentNoteId || !currentNote) return;
+            
+            // 変更がある場合のみ現在の編集内容をサイレント保存（待機しない）
+            if (hasUnsavedChangesForCurrentPage()) {
+                savePageChanges(false);
+            }
+            
+            try {
+                const nextNum = (currentNote.pages) ? currentNote.pages.length + 1 : 1;
+                
+                const res = await fetch(`/api/notes/${currentNoteId}/pages`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ page_name: `ページ ${nextNum}` })
+                });
+                
+                if (res.ok) {
+                    const data = await res.json();
+                    showToast("新しいページを作成しました", "success");
+                    
+                    // ノート情報を再取得
+                    const noteRes = await fetch(`/api/notes/${currentNoteId}`);
+                    if (noteRes.ok) {
+                        const updatedNote = await noteRes.json();
+                        currentNote = updatedNote;
+                        
+                        const idx = notes.findIndex(n => n.id === currentNoteId);
+                        if (idx !== -1) notes[idx] = updatedNote;
+                        
+                        await selectNote(currentNoteId, true, data.page_id);
+                    }
+                } else {
+                    showToast("ページの作成に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // ページ削除
+        async function deletePageTab(pageId) {
+            if (!currentNoteId) return;
+            
+            if (!confirm("本当にこのページを削除しますか？\nページ内の画像やテキスト、AI要約もすべて物理削除されます。")) {
+                return;
+            }
+            
+            try {
+                const res = await fetch(`/api/notes/${currentNoteId}/pages/${pageId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (res.ok) {
+                    showToast("ページを削除しました", "success");
+                    
+                    // リロード
+                    const noteRes = await fetch(`/api/notes/${currentNoteId}`);
+                    if (noteRes.ok) {
+                        const updatedNote = await noteRes.json();
+                        currentNote = updatedNote;
+                        const idx = notes.findIndex(n => n.id === currentNoteId);
+                        if (idx !== -1) notes[idx] = updatedNote;
+                        
+                        const remainingPages = updatedNote.pages || [];
+                        const nextActivePageId = remainingPages.length > 0 ? remainingPages[0].id : null;
+                        
+                        await selectNote(currentNoteId, true, nextActivePageId);
+                    }
+                } else {
+                    const errData = await res.json();
+                    showToast(errData.detail || "ページの削除に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // ページ名のダブルクリック編集
+        function editPageTitle(event, pageId, currentTitle) {
+            event.stopPropagation();
+            const spanEl = event.target;
+            const parentEl = spanEl.parentElement;
+            
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = currentTitle;
+            input.className = 'px-1 py-0.5 text-xs text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-700 border border-brand-500 rounded focus:outline-none w-20 font-semibold';
+            
+            parentEl.replaceChild(input, spanEl);
+            input.focus();
+            input.select();
+            
+            let finished = false;
+            
+            const finishEdit = async () => {
+                if (finished) return;
+                finished = true;
+                
+                const newTitle = input.value.trim() || currentTitle;
+                spanEl.innerText = newTitle;
+                parentEl.replaceChild(spanEl, input);
+                
+                if (newTitle !== currentTitle) {
+                    try {
+                        const raw_text = document.getElementById('detailRawText').value;
+                        const ai_summary = document.getElementById('detailSummary').value;
+                        const ai_tags = document.getElementById('detailTags').value;
+                        
+                        const res = await fetch(`/api/notes/${currentNoteId}/pages/${pageId}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                page_name: newTitle,
+                                raw_text: raw_text,
+                                reference_urls: currentUrls.join('\n'),
+                                ai_summary: ai_summary,
+                                ai_tags: ai_tags
+                            })
+                        });
+                        
+                        if (res.ok) {
+                            showToast("ページ名を変更しました", "success");
+                            // キャッシュリロード
+                            const noteRes = await fetch(`/api/notes/${currentNoteId}`);
+                            if (noteRes.ok) {
+                                const updatedNote = await noteRes.json();
+                                currentNote = updatedNote;
+                                const idx = notes.findIndex(n => n.id === currentNoteId);
+                                if (idx !== -1) notes[idx] = updatedNote;
+                                renderPageTabs(updatedNote, pageId);
+                            }
+                        } else {
+                            showToast("ページ名の変更に失敗しました", "error");
+                        }
+                    } catch (e) {
+                        showToast("通信エラーが発生しました", "error");
+                    }
+                }
+            };
+            
+            input.onblur = finishEdit;
+            input.onkeydown = (e) => {
+                if (e.key === 'Enter') finishEdit();
+                if (e.key === 'Escape') {
+                    finished = true;
+                    parentEl.replaceChild(spanEl, input);
+                }
+            };
         }
 
         // タグリストの描画
@@ -1001,48 +1358,174 @@
             });
         }
 
-        // 手動保存 (引数でトースト非表示に対応)
-        async function saveNoteChanges(showToastFlag = true) {
-            if (!currentNoteId) return;
-
-            const title = document.getElementById('detailTitle').value;
-            const raw_text = document.getElementById('detailRawText').value;
-            const ai_summary = document.getElementById('detailSummary').value;
-            const ai_tags = document.getElementById('detailTags').value;
+        // ノートメタデータ（タイトル等）の保存
+        async function saveNoteChanges(showToastFlag = true, customTitle = null, customRawText = null, customSummary = null, customTags = null, customUrlsList = null) {
+            if (!currentNoteId || !currentNote) return;
             
-            // 現在の所属フォルダを維持
-            const noteObj = notes.find(n => n.id === currentNoteId);
-            const parent_folder_id = noteObj ? noteObj.parent_folder_id : 'inbox';
-
+            const title = customTitle !== null ? customTitle : document.getElementById('detailTitle').value;
+            const raw_text = customRawText !== null ? customRawText : document.getElementById('detailRawText').value;
+            const ai_summary = customSummary !== null ? customSummary : document.getElementById('detailSummary').value;
+            const ai_tags = customTags !== null ? customTags : document.getElementById('detailTags').value;
+            const reference_urls = customUrlsList !== null ? customUrlsList.join('\n') : currentUrls.join('\n');
+            const parent_folder_id = currentNote.parent_folder_id || 'inbox';
+            
             try {
-                const res = await fetch(`/api/notes/${currentNoteId}`, {
+                // notes テーブルメタデータ更新
+                await fetch(`/api/notes/${currentNoteId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        title,
-                        raw_text,
-                        ai_summary,
-                        ai_tags,
-                        parent_folder_id
+                        title: title,
+                        raw_text: raw_text,
+                        ai_summary: ai_summary,
+                        ai_tags: ai_tags,
+                        parent_folder_id: parent_folder_id,
+                        reference_urls: reference_urls
                     })
                 });
-                
-                if (res.ok) {
-                    if (showToastFlag) {
-                        showToast("変更を保存しました (ベクトル再計算中)", "success");
-                    }
-                    renderTagsList(ai_tags);
-                    await fetchNotes();
-                } else {
-                    if (showToastFlag) {
-                        showToast("保存に失敗しました", "error");
-                    }
-                }
-            } catch (err) {
-                if (showToastFlag) {
-                    showToast("通信エラーが発生しました", "error");
-                }
+            } catch (e) {
+                console.error("Note title save failed:", e);
             }
+        }
+
+        // ページの保存
+        function savePageChanges(showToastFlag = true) {
+            if (!currentNoteId || !currentPageId || !currentNote) return Promise.resolve();
+
+            // DOMから同期的に値をキャプチャする（上書き前の値を保護するため）
+            const captureTitle = document.getElementById('detailTitle').value;
+            const captureRawText = document.getElementById('detailRawText').value;
+            const captureSummary = document.getElementById('detailSummary').value;
+            const captureTags = document.getElementById('detailTags').value;
+            const captureUrls = [...currentUrls];
+            const targetNoteId = currentNoteId;
+            const targetPageId = currentPageId;
+            
+            // 現在アクティブなタブ名を取得
+            const tabTitleEl = document.querySelector('#pageTabsContainer .border-t-2 .tab-title');
+            const capturePageName = tabTitleEl ? tabTitleEl.innerText : 'ページ1';
+            
+            // 1. メモリ上の currentNote データを即時同期（UXの整合性のため）
+            currentNote.title = captureTitle;
+            const page = (currentNote.pages || []).find(p => p.id === targetPageId);
+            if (page) {
+                page.raw_text = captureRawText;
+                page.reference_urls = captureUrls.join('\n');
+                page.ai_summary = captureSummary;
+                page.ai_tags = captureTags;
+            }
+            
+            // タイトル更新を非同期で走らせる（待機しない）
+            saveNoteChanges(false, captureTitle, captureRawText, captureSummary, captureTags, captureUrls);
+
+            // ページ保存APIの呼び出しを非同期（バックグラウンド）で実行
+            return (async () => {
+                try {
+                    const res = await fetch(`/api/notes/${targetNoteId}/pages/${targetPageId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            page_name: capturePageName,
+                            raw_text: captureRawText,
+                            reference_urls: captureUrls.join('\n'),
+                            ai_summary: captureSummary,
+                            ai_tags: captureTags
+                        })
+                    });
+                    
+                    if (res.ok) {
+                        if (showToastFlag) {
+                            showToast("変更を保存しました (ベクトル再計算中)", "success");
+                        }
+                        renderTagsList(captureTags);
+                        await fetchNotes();
+                    } else {
+                        if (showToastFlag) {
+                            showToast("保存に失敗しました", "error");
+                        }
+                    }
+                } catch (err) {
+                    if (showToastFlag) {
+                        showToast("通信エラーが発生しました", "error");
+                    }
+                }
+            })();
+        }
+
+        // 参考URLのレンダリング
+        function renderUrlsList() {
+            const container = document.getElementById('detailUrlsContainer');
+            container.innerHTML = '';
+            
+            if (currentUrls.length === 0) {
+                container.innerHTML = `<span class="text-xs text-slate-400 dark:text-slate-500 italic py-1">登録されている参考URLはありません。</span>`;
+                return;
+            }
+
+            currentUrls.forEach((url, index) => {
+                const badge = document.createElement('div');
+                badge.className = 'flex items-center space-x-1 px-2.5 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-brand-600 dark:text-brand-400 max-w-full shadow-sm';
+                
+                let displayUrl = url;
+                try {
+                    const parsed = new URL(url);
+                    displayUrl = parsed.hostname + (parsed.pathname !== '/' ? parsed.pathname : '');
+                    if (displayUrl.length > 30) {
+                        displayUrl = displayUrl.substring(0, 27) + '...';
+                    }
+                } catch(e) {
+                    if (displayUrl.length > 30) {
+                        displayUrl = displayUrl.substring(0, 27) + '...';
+                    }
+                }
+
+                badge.innerHTML = `
+                    <a href="${url}" target="_blank" rel="noopener noreferrer" class="hover:underline flex items-center space-x-1 truncate max-w-[200px]" title="${url}">
+                        <i data-lucide="external-link" class="w-3 h-3 flex-shrink-0"></i>
+                        <span class="truncate">${displayUrl}</span>
+                    </a>
+                    <button onclick="deleteUrlFromList(${index})" class="text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 ml-1 focus:outline-none transition" title="このURLを削除">
+                        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                    </button>
+                `;
+                container.appendChild(badge);
+            });
+            lucide.createIcons();
+        }
+
+        // 参考URLの追加
+        async function addUrlToList() {
+            const input = document.getElementById('detailNewUrl');
+            const urlVal = input.value.trim();
+            if (!urlVal) return;
+
+            // 簡易URL検証
+            if (!/^https?:\/\/.+/i.test(urlVal)) {
+                showToast("無効なURL形式です。http:// または https:// から入力してください。", "error");
+                return;
+            }
+
+            // 重複チェック
+            if (currentUrls.includes(urlVal)) {
+                showToast("既に登録されているURLです。", "error");
+                return;
+            }
+
+            currentUrls.push(urlVal);
+            input.value = '';
+            renderUrlsList();
+
+            // 即座にバックグラウンドでサイレント保存
+            await savePageChanges(false);
+        }
+
+        // 参考URLの削除
+        async function deleteUrlFromList(index) {
+            currentUrls.splice(index, 1);
+            renderUrlsList();
+
+            // 即座にバックグラウンドでサイレント保存
+            await savePageChanges(false);
         }
 
         // 削除
@@ -1153,6 +1636,9 @@
 
         // ハイブリッド検索 ＆ RAG の実行
         async function performSearch() {
+            // 検索開始時に戻るボタンは隠す
+            document.getElementById('btnBackToSearch').classList.add('hidden');
+
             const query = document.getElementById('searchInput').value;
             if (!query || !query.trim()) {
                 showToast("クエリを入力してください", "error");
@@ -1188,9 +1674,9 @@
                         card.className = 'p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-brand-500/50 cursor-pointer transition flex flex-col space-y-1';
                         card.onclick = () => {
                             // 参照元をクリックしたらそのノートを詳細表示
-                            closeSearchView();
-                            selectFolder(ref.parent_folder_id).then(() => {
-                                selectNote(ref.id, true);
+                            closeSearchView(true); // 戻るボタンを表示するフラグを渡す
+                            selectFolder(ref.parent_folder_id, true).then(() => {
+                                selectNote(ref.id, true, ref.page_id);
                             });
                         };
                         card.innerHTML = `
@@ -1211,13 +1697,29 @@
             }
         }
 
-        function closeSearchView() {
+        function closeSearchView(keepBackBtn = false) {
             document.getElementById('searchView').classList.add('hidden');
             if (currentFolderId === 'inbox') {
                 document.getElementById('dropZone').classList.remove('hidden');
             } else if (currentNoteId) {
                 document.getElementById('detailView').classList.remove('hidden');
             }
+
+            const backBtn = document.getElementById('btnBackToSearch');
+            if (keepBackBtn) {
+                backBtn.classList.remove('hidden');
+            } else {
+                backBtn.classList.add('hidden');
+            }
+        }
+
+        // 直近の検索結果画面に戻る
+        function backToSearchView() {
+            document.getElementById('dropZone').classList.add('hidden');
+            document.getElementById('detailView').classList.add('hidden');
+            document.getElementById('settingsView').classList.add('hidden');
+            document.getElementById('searchView').classList.remove('hidden');
+            document.getElementById('btnBackToSearch').classList.add('hidden');
         }
 
         // コピペ ＆ ドラッグドロップによる画像添付のイベント監視
@@ -1332,10 +1834,10 @@
 
         // ノートへの画像アップロード処理 (ノンブロッキング)
         async function uploadImage(file) {
-            if (!currentNoteId) return;
+            if (!currentNoteId || !currentPageId) return;
 
             // 画像追加前に、現在画面に入力されているタイトルや本文をサイレント保存する
-            await saveNoteChanges(false);
+            await savePageChanges(false);
 
             const formData = new FormData();
             formData.append("image", file);
@@ -1350,14 +1852,14 @@
             }
 
             try {
-                const res = await fetch(`/api/notes/${currentNoteId}/image`, {
+                const res = await fetch(`/api/notes/${currentNoteId}/pages/${currentPageId}/image`, {
                     method: 'POST',
                     body: formData
                 });
 
                 if (res.ok) {
                     await fetchNotes();
-                    await selectNote(currentNoteId, false);
+                    await selectNote(currentNoteId, false, currentPageId);
                 } else {
                     showToast("画像の添付に失敗しました", "error");
                 }
@@ -1373,35 +1875,51 @@
             
             ws = new WebSocket(wsUri);
             
-            ws.onmessage = (event) => {
+            ws.onmessage = async (event) => {
                 const data = JSON.parse(event.data);
                 
-                if (data.type === 'completed') {
+                if (data.type === 'import_progress') {
+                    // ドキュメントインポートの進捗更新
+                    const percent = Math.round((data.current / data.total) * 100);
+                    const noteObj = notes.find(n => n.id === data.note_id);
+                    if (noteObj) {
+                        noteObj.ai_summary = `${data.message} (${percent}%)`;
+                        renderNotes();
+                    }
+                } else if (data.type === 'failed') {
+                    showToast(`インポート失敗: 「${data.title}」\n詳細: ${data.error}`, "error");
+                    if (currentFolderId) {
+                        await fetchNotes();
+                    }
+                } else if (data.type === 'completed' || data.type === 'pending_review') {
                     if (data.error) {
                         showToast(`解析エラー: ${data.error}`, "error");
                     } else {
-                        showToast(`自動分類完了: 「${data.title}」`, "success");
+                        if (data.type === 'completed') {
+                            showToast(data.message || `自動分類完了: 「${data.title}」`, "success");
+                        } else {
+                            showToast(`仕分け保留: 「${data.title}」の配置を指定してください`, "warning");
+                        }
                     }
                     
                     if (currentFolderId === 'inbox' || currentFolderId === data.folder_id) {
-                        fetchNotes();
-                    }
-                    if (currentNoteId === data.note_id) {
-                        selectNote(data.note_id, false);
-                    }
-                    updateInboxBadge();
-                } else if (data.type === 'pending_review') {
-                    if (data.error) {
-                        showToast(`解析エラー: ${data.error}`, "error");
-                    } else {
-                        showToast(`仕分け保留: 「${data.title}」の配置を指定してください`, "warning");
+                        await fetchNotes();
                     }
                     
-                    if (currentFolderId === 'inbox' || currentFolderId === data.folder_id) {
-                        fetchNotes();
-                    }
                     if (currentNoteId === data.note_id) {
-                        selectNote(data.note_id, false);
+                        // page_idがnull（ドキュメント全体インポート完了）の場合は最初のページを選択
+                        if (!data.page_id || currentPageId === data.page_id) {
+                            await selectNote(data.note_id, false, data.page_id || undefined);
+                        } else {
+                            const res = await fetch(`/api/notes/${data.note_id}`);
+                            if (res.ok) {
+                                const noteObj = await res.json();
+                                currentNote = noteObj;
+                                const idx = notes.findIndex(n => n.id === data.note_id);
+                                if (idx !== -1) notes[idx] = noteObj;
+                                await selectPage(currentPageId, false);
+                            }
+                        }
                     }
                     updateInboxBadge();
                 }
@@ -1504,14 +2022,14 @@
             showToast("画像を削除中...", "info");
 
             try {
-                const res = await fetch(`/api/notes/${currentNoteId}/images/${imageId}`, {
+                const res = await fetch(`/api/notes/${currentNoteId}/pages/${currentPageId}/images/${imageId}`, {
                     method: 'DELETE'
                 });
 
                 if (res.ok) {
                     showToast("画像を削除しました。再解析を開始します...", "success");
                     await fetchNotes();
-                    await selectNote(currentNoteId, false);
+                    await selectNote(currentNoteId, false, currentPageId);
                 } else {
                     showToast("画像の削除に失敗しました", "error");
                 }
@@ -1541,6 +2059,11 @@
                 if (settings.rag_limit) {
                     document.getElementById('settingRagLimit').value = settings.rag_limit;
                 }
+                
+                // RAG足切り閾値
+                const threshold = settings.rag_threshold !== undefined ? settings.rag_threshold : '0.8';
+                document.getElementById('settingRagThreshold').value = threshold;
+                document.getElementById('ragThresholdValue').innerText = threshold;
             } catch (err) {
                 console.error("Failed to fetch settings:", err);
             }
@@ -1552,6 +2075,7 @@
             const thinking_level = document.getElementById('settingThinkingLevel').value;
             const confidence_threshold = document.getElementById('settingConfidenceThreshold').value;
             const rag_limit = document.getElementById('settingRagLimit').value;
+            const rag_threshold = document.getElementById('settingRagThreshold').value;
 
             try {
                 const res = await fetch('/api/settings', {
@@ -1562,7 +2086,8 @@
                             model_name,
                             thinking_level,
                             confidence_threshold,
-                            rag_limit
+                            rag_limit,
+                            rag_threshold
                         }
                     })
                 });
@@ -1738,7 +2263,383 @@
                 showToast("通信エラーが発生しました", "error");
             }
         }
+
+        // ドキュメントインポートのトリガー
+        function triggerImportFile() {
+            document.getElementById('importFileInput').click();
+        }
+
+        // ファイル選択時のハンドリング
+        async function handleImportFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            await importDocument(file);
+            event.target.value = ''; // リセット
+        }
+
+        // ノートリストへのドロップハンドリング
+        async function handleNoteListDrop(e) {
+            e.preventDefault();
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                const file = e.dataTransfer.files[0];
+                await importDocument(file);
+            }
+        }
+
+        // ドキュメントインポート処理
+        async function importDocument(file) {
+            if (!currentFolderId) {
+                showToast("インポート先のフォルダを選択してください", "warning");
+                return;
+            }
+
+            const allowedExts = ['.pdf', '.pptx', '.ppt', '.docx', '.xlsx', '.xlsm', '.xls', '.txt', '.md'];
+            const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+            if (!allowedExts.includes(fileExt)) {
+                showToast("対応していないファイル形式です。(" + allowedExts.join(', ') + ")", "error");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('folder_id', currentFolderId);
+
+            showToast("ドキュメントのインポートを開始しました...", "success");
+
+            try {
+                const res = await fetch('/api/notes/import', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    
+                    // 仮の処理中ノートオブジェクトをリストに追加
+                    const tempNote = {
+                        id: data.note_id,
+                        title: file.name,
+                        raw_text: "",
+                        ai_summary: "インポート解析を開始します...",
+                        ai_tags: "",
+                        status: "processing",
+                        parent_folder_id: currentFolderId,
+                        updated_at: new Date().toISOString()
+                    };
+                    
+                    if (!Array.isArray(notes)) {
+                        notes = [];
+                    }
+                    notes.unshift(tempNote);
+                    renderNotes();
+                } else {
+                    const errData = await res.json();
+                    showToast("インポート要求に失敗しました: " + (errData.detail || ""), "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // 添付ファイル関連の関数群
+        function triggerAttachmentFileInput() {
+            if (!currentPageId) {
+                showToast("ファイルを添付するページを選択してください", "warning");
+                return;
+            }
+            document.getElementById('attachmentFileInput').click();
+        }
+
+        async function handleAttachmentFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            await uploadAttachment(file);
+            event.target.value = '';
+        }
+
+        async function uploadAttachment(file) {
+            if (!currentNoteId || !currentPageId) {
+                showToast("添付先ページが選択されていません", "error");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // 一時的にアップロード中カードを挿入
+            const container = document.getElementById('detailAttachmentsContainer');
+            const loadingCard = document.createElement('div');
+            loadingCard.id = 'attachment-loading-card';
+            loadingCard.className = 'flex items-center justify-between p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 animate-pulse';
+            loadingCard.innerHTML = `
+                <div class="flex items-center space-x-3 overflow-hidden">
+                    <div class="p-2.5 bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 rounded-lg">
+                        <i data-lucide="loader" class="w-5 h-5 animate-spin"></i>
+                    </div>
+                    <div class="overflow-hidden">
+                        <p class="text-xs font-semibold text-slate-700 dark:text-slate-300 truncate">${escapeHtml(file.name)}</p>
+                        <p class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">アップロード中...</p>
+                    </div>
+                </div>
+            `;
+            container.appendChild(loadingCard);
+
+            showToast("ファイルの添付を開始しました...", "success");
+
+            try {
+                const res = await fetch(`/api/notes/${currentNoteId}/pages/${currentPageId}/attachments`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    showToast("ファイルをアップロードしました。AI解析を開始します...", "success");
+                } else {
+                    const errData = await res.json();
+                    showToast("アップロードに失敗しました: " + (errData.detail || ""), "error");
+                    const card = document.getElementById('attachment-loading-card');
+                    if (card) card.remove();
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+                const card = document.getElementById('attachment-loading-card');
+                if (card) card.remove();
+            }
+        }
+
+        async function deleteAttachment(event, attachmentId, filename) {
+            event.stopPropagation();
+            if (!confirm(`本当に添付ファイル「${filename}」を完全に削除しますか？\n（物理ファイルとAI要約、ベクトルインデックスも削除されます）`)) return;
+
+            try {
+                const res = await fetch(`/api/attachments/${attachmentId}`, {
+                    method: 'DELETE'
+                });
+
+                if (res.ok) {
+                    showToast("添付ファイルを削除しました", "success");
+                    
+                    const noteRes = await fetch(`/api/notes/${currentNoteId}`);
+                    if (noteRes.ok) {
+                        const noteObj = await noteRes.json();
+                        currentNote = noteObj;
+                        const idx = notes.findIndex(n => n.id === currentNoteId);
+                        if (idx !== -1) notes[idx] = noteObj;
+                        
+                        const page = (currentNote.pages || []).find(p => p.id === currentPageId);
+                        if (page) {
+                            renderAttachmentsList(page.attachments || []);
+                        }
+                    }
+                } else {
+                    showToast("削除に失敗しました", "error");
+                }
+            } catch (err) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        function renderAttachmentsList(attachments) {
+            const container = document.getElementById('detailAttachmentsContainer');
+            container.innerHTML = '';
+
+            // AI解析タブのセクションも同時に更新
+            renderAttachmentAiSection(attachments);
+
+            if (!attachments || attachments.length === 0) {
+                return;
+            }
+
+            attachments.forEach(att => {
+                const card = document.createElement('div');
+                card.className = 'group relative flex items-center justify-between p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 hover:bg-white dark:hover:bg-slate-900 hover:shadow-md hover:border-brand-500/30 dark:hover:border-brand-500/30 transition duration-200 cursor-pointer';
+                card.onclick = () => window.open(`/api/attachments/${att.id}`, '_blank');
+
+                const kb = (att.file_size / 1024).toFixed(1);
+                const sizeStr = kb > 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
+
+                let iconName = 'file';
+                const fileExt = att.file_name.substring(att.file_name.lastIndexOf('.')).toLowerCase();
+                if (fileExt === '.pdf') iconName = 'file-text';
+                else if (['.xlsx', '.xls', '.csv'].includes(fileExt)) iconName = 'file-spreadsheet';
+                else if (['.pptx', '.ppt'].includes(fileExt)) iconName = 'presentation';
+                else if (['.docx', '.doc'].includes(fileExt)) iconName = 'file-check';
+                else if (['.txt', '.md'].includes(fileExt)) iconName = 'file-edit';
+
+                const hasAiData = att.ai_summary || att.ai_ocr_text;
+                const summaryHtml = att.ai_summary 
+                    ? `<p class="text-[9px] text-brand-600 dark:text-brand-400 mt-0.5 truncate font-medium max-w-[200px]" title="AI要約: ${escapeHtml(att.ai_summary)}">✨ ${escapeHtml(att.ai_summary)}</p>`
+                    : `<p class="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5 font-medium">✨ AI解析待機中...</p>`;
+
+                card.innerHTML = `
+                    <div class="flex items-center space-x-3 overflow-hidden">
+                        <div class="p-2.5 bg-brand-500/10 text-brand-600 dark:text-brand-400 rounded-lg group-hover:bg-brand-500 group-hover:text-white transition">
+                            <i data-lucide="${iconName}" class="w-5 h-5"></i>
+                        </div>
+                        <div class="overflow-hidden whitespace-nowrap">
+                            <p class="text-xs font-semibold text-slate-700 dark:text-slate-300 truncate max-w-[180px]">${escapeHtml(att.file_name)}</p>
+                            <div class="flex items-center space-x-2">
+                                <span class="text-[10px] text-slate-400 dark:text-slate-500 font-mono">${sizeStr}</span>
+                            </div>
+                            ${summaryHtml}
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        ${hasAiData ? `
+                        <button onclick="openAttachmentAiModal(event, ${JSON.stringify(att).replace(/"/g, '&quot;')})"
+                                class="p-1.5 bg-brand-500/10 dark:bg-brand-500/20 text-brand-600 dark:text-brand-400 hover:bg-brand-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition z-10"
+                                title="AI解析結果を表示">
+                            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                        </button>` : ''}
+                        <button onclick="deleteAttachment(event, '${att.id}', '${escapeHtml(att.file_name)}')" 
+                                class="p-1.5 bg-slate-200 dark:bg-slate-800 text-slate-500 hover:bg-rose-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition z-10" 
+                                title="添付ファイルを削除">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+        }
+
+        // AI解析タブ内の「添付ファイルAI解析結果」セクションを更新
+        function renderAttachmentAiSection(attachments) {
+            const wrapper = document.getElementById('detailAttachmentAiContainer');
+            const list = document.getElementById('detailAttachmentAiList');
+            if (!wrapper || !list) return;
+
+            const withData = (attachments || []).filter(a => a.ai_summary || a.ai_ocr_text);
+            if (withData.length === 0) {
+                wrapper.classList.add('hidden');
+                return;
+            }
+
+            wrapper.classList.remove('hidden');
+            list.innerHTML = '';
+
+            withData.forEach(att => {
+                const fileExt = att.file_name.substring(att.file_name.lastIndexOf('.')).toLowerCase();
+                let iconName = 'file';
+                if (fileExt === '.pdf') iconName = 'file-text';
+                else if (['.xlsx', '.xls', '.csv'].includes(fileExt)) iconName = 'file-spreadsheet';
+                else if (['.pptx', '.ppt'].includes(fileExt)) iconName = 'presentation';
+                else if (['.docx', '.doc'].includes(fileExt)) iconName = 'file-check';
+                else if (['.txt', '.md'].includes(fileExt)) iconName = 'file-edit';
+
+                const el = document.createElement('div');
+                el.className = 'rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 overflow-hidden';
+                el.innerHTML = `
+                    <div class="flex items-center gap-2.5 px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+                        <div class="p-1.5 bg-brand-500/10 text-brand-600 dark:text-brand-400 rounded-md">
+                            <i data-lucide="${iconName}" class="w-4 h-4"></i>
+                        </div>
+                        <p class="text-xs font-semibold text-slate-700 dark:text-slate-300 truncate flex-1">${escapeHtml(att.file_name)}</p>
+                        <button onclick="openAttachmentAiModal(event, ${JSON.stringify(att).replace(/"/g, '&quot;')})"
+                                class="text-[10px] font-semibold text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200 flex items-center gap-1 shrink-0 transition"
+                                title="全文を表示">
+                            <i data-lucide="maximize-2" class="w-3 h-3"></i>
+                            全文表示
+                        </button>
+                    </div>
+                    ${att.ai_summary ? `
+                    <div class="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800/60">
+                        <p class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">AI要約</p>
+                        <p class="text-xs text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">${escapeHtml(att.ai_summary)}</p>
+                    </div>` : ''}
+                    ${att.ai_ocr_text ? `
+                    <div class="px-4 py-2.5">
+                        <p class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">抽出テキスト（冒頭300文字）</p>
+                        <pre class="text-[10px] text-slate-500 dark:text-slate-400 font-mono leading-relaxed whitespace-pre-wrap line-clamp-5">${escapeHtml(att.ai_ocr_text.substring(0, 300))}${att.ai_ocr_text.length > 300 ? '\n...' : ''}</pre>
+                    </div>` : ''}
+                `;
+                list.appendChild(el);
+            });
+
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }
+
+        // 添付ファイルAI解析モーダルを開く
+        function openAttachmentAiModal(event, att) {
+            event.stopPropagation();
+            const modal = document.getElementById('attachmentAiModal');
+            document.getElementById('attModalFileName').textContent = att.file_name;
+            const summaryEl = document.getElementById('attModalSummary');
+            const summaryWrapper = document.getElementById('attModalSummaryWrapper');
+            const ocrEl = document.getElementById('attModalOcrText');
+            const ocrWrapper = document.getElementById('attModalOcrWrapper');
+
+            if (att.ai_summary) {
+                summaryEl.textContent = att.ai_summary;
+                summaryWrapper.classList.remove('hidden');
+            } else {
+                summaryWrapper.classList.add('hidden');
+            }
+
+            if (att.ai_ocr_text) {
+                ocrEl.textContent = att.ai_ocr_text;
+                ocrWrapper.classList.remove('hidden');
+            } else {
+                ocrWrapper.classList.add('hidden');
+            }
+
+            modal.classList.remove('hidden');
+        }
+
+        function closeAttachmentAiModal() {
+            document.getElementById('attachmentAiModal').classList.add('hidden');
+        }
     </script>
+
+    <!-- 添付ファイルAI解析結果モーダル -->
+    <div id="attachmentAiModal" class="fixed inset-0 z-[9998] flex items-center justify-center p-4 hidden" onclick="closeAttachmentAiModal()">
+        <div class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm"></div>
+        <div class="relative w-full max-w-2xl max-h-[85vh] flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden" onclick="event.stopPropagation()">
+            <!-- ヘッダー -->
+            <div class="flex items-center gap-3 px-5 py-4 border-b border-slate-200 dark:border-slate-800 bg-gradient-to-r from-brand-500/5 to-transparent shrink-0">
+                <div class="p-2 bg-brand-500/10 text-brand-600 dark:text-brand-400 rounded-xl">
+                    <i data-lucide="sparkles" class="w-5 h-5"></i>
+                </div>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">AI解析結果</p>
+                    <p id="attModalFileName" class="text-sm font-bold text-slate-800 dark:text-slate-200 truncate"></p>
+                </div>
+                <button onclick="closeAttachmentAiModal()" class="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg transition shrink-0">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+            </div>
+            <!-- コンテンツ（スクロール可能） -->
+            <div class="flex-1 overflow-y-auto p-5 space-y-5">
+                <!-- AI要約 -->
+                <div id="attModalSummaryWrapper">
+                    <p class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-2">
+                        <i data-lucide="sparkles" class="w-3 h-3 text-brand-500"></i>
+                        AI 要約
+                    </p>
+                    <div class="p-4 rounded-xl bg-brand-500/5 dark:bg-brand-500/10 border border-brand-500/20">
+                        <p id="attModalSummary" class="text-sm text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap"></p>
+                    </div>
+                </div>
+                <!-- 抽出テキスト全文 -->
+                <div id="attModalOcrWrapper">
+                    <p class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mb-2">
+                        <i data-lucide="file-text" class="w-3 h-3 text-teal-500"></i>
+                        抽出テキスト全文
+                    </p>
+                    <pre id="attModalOcrText" class="w-full p-4 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-900 rounded-xl text-xs text-slate-600 dark:text-slate-400 font-mono overflow-x-auto whitespace-pre-wrap max-h-[50vh] overflow-y-auto"></pre>
+                </div>
+            </div>
+            <!-- フッター -->
+            <div class="px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex justify-end shrink-0">
+                <button onclick="closeAttachmentAiModal()" class="px-5 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold rounded-xl transition">
+                    閉じる
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- 未保存変更の確認モーダル -->
     <div id="unsavedModal" class="fixed inset-0 z-[9999] flex items-center justify-center hidden">

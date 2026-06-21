@@ -61,10 +61,12 @@ AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2023-05-15")
 
 # 物理パス設定
 IMAGE_DIR = os.path.join(BASE_DIR, "local_images")
+ATTACHMENT_DIR = os.path.join(BASE_DIR, "local_attachments")
 SQLITE_DB_PATH = os.path.join(BASE_DIR, "local_knowledge.db")
 LANCEDB_DIR = os.path.join(BASE_DIR, "lancedb_data")
 RULES_PATH = os.path.join(BASE_DIR, "rules.md")
 
 # ディレクトリ作成
 os.makedirs(IMAGE_DIR, exist_ok=True)
+os.makedirs(ATTACHMENT_DIR, exist_ok=True)
 os.makedirs(LANCEDB_DIR, exist_ok=True)
