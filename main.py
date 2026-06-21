@@ -600,6 +600,25 @@ def reorder_pages(note_id: str, reorder_data: PagesReorder):
     sqlite_client.reorder_pages(note_id, reorder_data.page_ids)
     return {"status": "reordered", "note_id": note_id}
 
+# フォルダ順序変更 API
+class FoldersReorder(BaseModel):
+    folder_ids: list[str]
+
+@app.put("/api/folders/reorder")
+def reorder_folders(reorder_data: FoldersReorder):
+    sqlite_client.reorder_folders(reorder_data.folder_ids)
+    return {"status": "reordered"}
+
+# ノート順序変更 API
+class NotesReorder(BaseModel):
+    note_ids: list[str]
+
+@app.put("/api/folders/{folder_id}/notes/reorder")
+def reorder_notes(folder_id: str, reorder_data: NotesReorder):
+    sqlite_client.reorder_notes(folder_id, reorder_data.note_ids)
+    return {"status": "reordered", "folder_id": folder_id}
+
+
 # フォルダ修正スキーマ
 class FolderFix(BaseModel):
     note_id: str

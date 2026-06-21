@@ -687,12 +687,16 @@
             // inbox 以外のフォルダをレンダリング
             folders.filter(f => f.id !== 'inbox').forEach(f => {
                 const item = document.createElement('div');
+                item.setAttribute('id', `folder-${f.id}`);
                 item.className = `flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-900 hover:text-slate-900 dark:hover:text-white cursor-pointer transition group ${currentFolderId === f.id ? 'bg-slate-200 dark:bg-slate-900 text-slate-900 dark:text-white font-medium border-l-2 border-brand-500' : ''}`;
                 item.onclick = () => selectFolder(f.id);
                 
-                // ドラッグ＆ドロップ受け入れ属性を設定
-                item.setAttribute('ondragover', 'allowDrop(event)');
-                item.setAttribute('ondrop', `handleFolderDrop(event, '${f.id}')`);
+                // ドラッグ＆ドロップおよび並び替え用属性を設定
+                item.setAttribute('draggable', 'true');
+                item.setAttribute('ondragstart', `handleFolderDragStart(event, '${f.id}')`);
+                item.setAttribute('ondragover', `handleFolderDragOver(event, '${f.id}')`);
+                item.setAttribute('ondragleave', `handleFolderDragLeave(event, '${f.id}')`);
+                item.setAttribute('ondrop', `handleFolderDropOnFolder(event, '${f.id}')`);
                 
                 item.innerHTML = `
                     <div class="flex items-center space-x-2.5 overflow-hidden">
@@ -826,6 +830,7 @@
 
             notes.forEach(note => {
                 const item = document.createElement('div');
+                item.setAttribute('id', `note-${note.id}`);
                 item.className = `p-3.5 rounded-xl cursor-pointer select-none transition border flex flex-col space-y-2 relative group ${
                     currentNoteId === note.id 
                     ? 'bg-brand-500/10 border-brand-500/50 hover:bg-brand-500/15' 
@@ -838,9 +843,12 @@
                     selectNote(note.id, force);
                 };
                 
-                // ドラッグ可能属性
+                // ドラッグ可能および並び替え用属性を設定
                 item.setAttribute('draggable', 'true');
                 item.setAttribute('ondragstart', `handleNoteDragStart(event, '${note.id}')`);
+                item.setAttribute('ondragover', `handleNoteDragOver(event, '${note.id}')`);
+                item.setAttribute('ondragleave', `handleNoteDragLeave(event, '${note.id}')`);
+                item.setAttribute('ondrop', `handleNoteDropOnNote(event, '${note.id}')`);
 
                 // ステータスバッジ
                 let statusBadge = '';
@@ -1586,10 +1594,189 @@
             }
         }
 
-        // ドラッグ＆ドロップ用イベントハンドラ (手動移動用)
+        // ドラッグ＆ドロップ用イベントハンドラ (手動移動・並び替え用)
+        let draggedFolderId = null;
+        let draggedNoteId = null;
+
+        function handleFolderDragStart(e, folderId) {
+            draggedFolderId = folderId;
+            e.dataTransfer.setData('text/folder-id', folderId);
+            e.dataTransfer.effectAllowed = 'move';
+            
+            const targetEl = document.getElementById(`folder-${folderId}`);
+            if (targetEl) {
+                targetEl.classList.add('opacity-50');
+                targetEl.addEventListener('dragend', (evt) => {
+                    evt.target.classList.remove('opacity-50');
+                    draggedFolderId = null;
+                }, { once: true });
+            }
+        }
+
+        function handleFolderDragOver(e, folderId) {
+            e.preventDefault();
+            const targetEl = document.getElementById(`folder-${folderId}`);
+            if (!targetEl) return;
+
+            if (e.dataTransfer.types.includes('text/folder-id')) {
+                if (draggedFolderId === folderId) return;
+                
+                const rect = targetEl.getBoundingClientRect();
+                const relativeY = e.clientY - rect.top;
+                
+                if (relativeY < rect.height / 2) {
+                    targetEl.classList.add('border-t-2', 'border-brand-500');
+                    targetEl.classList.remove('border-b-2');
+                } else {
+                    targetEl.classList.add('border-b-2', 'border-brand-500');
+                    targetEl.classList.remove('border-t-2');
+                }
+            } else {
+                targetEl.classList.add('bg-brand-500/10', 'border-brand-500/20');
+            }
+        }
+
+        function handleFolderDragLeave(e, folderId) {
+            const targetEl = document.getElementById(`folder-${folderId}`);
+            if (targetEl) {
+                targetEl.classList.remove('border-t-2', 'border-b-2', 'border-brand-500', 'bg-brand-500/10', 'border-brand-500/20');
+            }
+        }
+
+        async function handleFolderDropOnFolder(e, targetFolderId) {
+            e.preventDefault();
+            const targetEl = document.getElementById(`folder-${targetFolderId}`);
+            if (targetEl) {
+                targetEl.classList.remove('border-t-2', 'border-b-2', 'border-brand-500', 'bg-brand-500/10', 'border-brand-500/20');
+            }
+
+            const folderId = e.dataTransfer.getData('text/folder-id');
+            if (folderId) {
+                if (folderId === targetFolderId) return;
+
+                const rect = targetEl.getBoundingClientRect();
+                const relativeY = e.clientY - rect.top;
+                const insertBefore = relativeY < rect.height / 2;
+
+                const folderListExceptInbox = folders.filter(f => f.id !== 'inbox');
+                const draggedFolderIdx = folderListExceptInbox.findIndex(f => f.id === folderId);
+                const targetFolderIdx = folderListExceptInbox.findIndex(f => f.id === targetFolderId);
+
+                if (draggedFolderIdx === -1 || targetFolderIdx === -1) return;
+
+                const [draggedFolder] = folderListExceptInbox.splice(draggedFolderIdx, 1);
+                
+                let newTargetIdx = folderListExceptInbox.findIndex(f => f.id === targetFolderId);
+                if (!insertBefore) {
+                    newTargetIdx += 1;
+                }
+                folderListExceptInbox.splice(newTargetIdx, 0, draggedFolder);
+
+                const inboxFolder = folders.find(f => f.id === 'inbox');
+                folders = [inboxFolder, ...folderListExceptInbox];
+
+                renderFolders();
+
+                try {
+                    const orderIds = folderListExceptInbox.map(f => f.id);
+                    await fetch('/api/folders/reorder', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ folder_ids: orderIds })
+                    });
+                    showToast("フォルダの並び順を保存しました", "success");
+                } catch (err) {
+                    console.error("Failed to reorder folders:", err);
+                    showToast("並び順の保存に失敗しました", "error");
+                }
+            } else {
+                await handleFolderDrop(e, targetFolderId);
+            }
+        }
+
         function handleNoteDragStart(e, noteId) {
+            draggedNoteId = noteId;
             e.dataTransfer.setData('text/plain', noteId);
             e.dataTransfer.effectAllowed = 'move';
+            
+            const targetEl = document.getElementById(`note-${noteId}`);
+            if (targetEl) {
+                targetEl.classList.add('opacity-50');
+                targetEl.addEventListener('dragend', (evt) => {
+                    evt.target.classList.remove('opacity-50');
+                    draggedNoteId = null;
+                }, { once: true });
+            }
+        }
+
+        function handleNoteDragOver(e, noteId) {
+            e.preventDefault();
+            if (e.dataTransfer.types.includes('text/folder-id')) return;
+            if (draggedNoteId === noteId) return;
+
+            const targetEl = document.getElementById(`note-${noteId}`);
+            if (!targetEl) return;
+
+            const rect = targetEl.getBoundingClientRect();
+            const relativeY = e.clientY - rect.top;
+
+            if (relativeY < rect.height / 2) {
+                targetEl.classList.add('border-t-2', 'border-brand-500');
+                targetEl.classList.remove('border-b-2');
+            } else {
+                targetEl.classList.add('border-b-2', 'border-brand-500');
+                targetEl.classList.remove('border-t-2');
+            }
+        }
+
+        function handleNoteDragLeave(e, noteId) {
+            const targetEl = document.getElementById(`note-${noteId}`);
+            if (targetEl) {
+                targetEl.classList.remove('border-t-2', 'border-b-2', 'border-brand-500');
+            }
+        }
+
+        async function handleNoteDropOnNote(e, targetNoteId) {
+            e.preventDefault();
+            const targetEl = document.getElementById(`note-${targetNoteId}`);
+            if (targetEl) {
+                targetEl.classList.remove('border-t-2', 'border-b-2', 'border-brand-500');
+            }
+
+            const noteId = e.dataTransfer.getData('text/plain');
+            if (!noteId || noteId === targetNoteId) return;
+
+            const draggedNoteIdx = notes.findIndex(n => n.id === noteId);
+            const targetNoteIdx = notes.findIndex(n => n.id === targetNoteId);
+
+            if (draggedNoteIdx === -1 || targetNoteIdx === -1) return;
+
+            const rect = targetEl.getBoundingClientRect();
+            const relativeY = e.clientY - rect.top;
+            const insertBefore = relativeY < rect.height / 2;
+
+            const [draggedNote] = notes.splice(draggedNoteIdx, 1);
+            
+            let newTargetIdx = notes.findIndex(n => n.id === targetNoteId);
+            if (!insertBefore) {
+                newTargetIdx += 1;
+            }
+            notes.splice(newTargetIdx, 0, draggedNote);
+
+            renderNotes();
+
+            try {
+                const orderIds = notes.map(n => n.id);
+                await fetch(`/api/folders/${currentFolderId}/notes/reorder`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ note_ids: orderIds })
+                });
+                showToast("ノートの並び順を保存しました", "success");
+            } catch (err) {
+                console.error("Failed to reorder notes:", err);
+                showToast("並び順の保存に失敗しました", "error");
+            }
         }
 
         function allowDrop(e) {

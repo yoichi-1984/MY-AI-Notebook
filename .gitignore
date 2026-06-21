@@ -216,3 +216,4 @@ local_knowledge.db
 lancedb_data/
 local_images/
 local_attachments/
+old/

@@ -9,7 +9,7 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-LATEST_VERSION = 6
+LATEST_VERSION = 7
 
 def get_db_version(conn) -> int:
     cursor = conn.cursor()
@@ -233,6 +233,11 @@ def init_db():
                         )
                     """)
                 
+                elif next_version == 7:
+                    # folders テーブルおよび notes テーブルに sort_order カラムを追加
+                    cursor.execute("ALTER TABLE folders ADD COLUMN sort_order INTEGER DEFAULT 0")
+                    cursor.execute("ALTER TABLE notes ADD COLUMN sort_order INTEGER DEFAULT 0")
+                
                 conn.commit()
             except Exception as e:
                 conn.rollback()
@@ -269,9 +274,12 @@ def create_folder(name: str, parent_id: str = None) -> str:
     folder_id = str(uuid.uuid4())
     with get_connection() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT MAX(sort_order) FROM folders")
+        max_row = cursor.fetchone()
+        max_order = max_row[0] if max_row and max_row[0] is not None else 0
         cursor.execute(
-            "INSERT INTO folders (id, name, parent_id) VALUES (?, ?, ?)",
-            (folder_id, name, parent_id)
+            "INSERT INTO folders (id, name, parent_id, sort_order) VALUES (?, ?, ?, ?)",
+            (folder_id, name, parent_id, max_order + 1)
         )
         conn.commit()
     return folder_id
@@ -279,7 +287,7 @@ def create_folder(name: str, parent_id: str = None) -> str:
 def get_folders():
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, parent_id FROM folders")
+        cursor.execute("SELECT id, name, parent_id, sort_order FROM folders ORDER BY sort_order ASC, name ASC")
         return [dict(row) for row in cursor.fetchall()]
 
 def create_note(note_id: str, parent_folder_id: str, raw_text: str, image_path: str = None) -> str:
@@ -287,12 +295,15 @@ def create_note(note_id: str, parent_folder_id: str, raw_text: str, image_path: 
     page_id = str(uuid.uuid4())
     with get_connection() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT MAX(sort_order) FROM notes WHERE parent_folder_id = ?", (parent_folder_id,))
+        max_row = cursor.fetchone()
+        max_order = max_row[0] if max_row and max_row[0] is not None else 0
         cursor.execute(
             """
-            INSERT INTO notes (id, parent_folder_id, title, raw_text, image_path, status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO notes (id, parent_folder_id, title, raw_text, image_path, status, sort_order, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (note_id, parent_folder_id, "", raw_text, image_path, "processing", now)
+            (note_id, parent_folder_id, "", raw_text, image_path, "processing", max_order + 1, now)
         )
         
         # note_pages テーブルへ初期ページを挿入
@@ -631,7 +642,7 @@ def get_note(note_id: str):
 def get_notes_by_folder(folder_id: str):
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM notes WHERE parent_folder_id = ? ORDER BY updated_at DESC", (folder_id,))
+        cursor.execute("SELECT * FROM notes WHERE parent_folder_id = ? ORDER BY sort_order ASC, updated_at DESC", (folder_id,))
         results = []
         for row in cursor.fetchall():
             note_dict = dict(row)
@@ -753,12 +764,15 @@ def create_manual_note(note_id: str, parent_folder_id: str, title: str) -> str:
     page_id = str(uuid.uuid4())
     with get_connection() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT MAX(sort_order) FROM notes WHERE parent_folder_id = ?", (parent_folder_id,))
+        max_row = cursor.fetchone()
+        max_order = max_row[0] if max_row and max_row[0] is not None else 0
         cursor.execute(
             """
-            INSERT INTO notes (id, parent_folder_id, title, raw_text, image_path, status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO notes (id, parent_folder_id, title, raw_text, image_path, status, sort_order, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (note_id, parent_folder_id, title, "", None, "completed", now)
+            (note_id, parent_folder_id, title, "", None, "completed", max_order + 1, now)
         )
         
         # note_pages テーブルへ初期ページを挿入
@@ -830,6 +844,20 @@ def update_attachment_ai_metadata(attachment_id: str, ai_summary: str, ai_ocr_te
             """,
             (ai_summary, ai_ocr_text, attachment_id)
         )
+        conn.commit()
+
+def reorder_folders(folder_ids: list[str]) -> None:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for idx, f_id in enumerate(folder_ids):
+            cursor.execute("UPDATE folders SET sort_order = ? WHERE id = ?", (idx, f_id))
+        conn.commit()
+
+def reorder_notes(folder_id: str, note_ids: list[str]) -> None:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for idx, n_id in enumerate(note_ids):
+            cursor.execute("UPDATE notes SET sort_order = ? WHERE id = ? AND parent_folder_id = ?", (idx, n_id, folder_id))
         conn.commit()
 
 
