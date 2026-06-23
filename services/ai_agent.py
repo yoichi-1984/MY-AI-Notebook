@@ -422,39 +422,41 @@ def analyze_and_structure_with_gemini(image_bytes: bytes, raw_text: str, folder_
         write_debug_log(error_msg)
         raise e
 
-def generate_embedding_via_azure(text: str) -> list[float]:
+async def generate_embedding_via_azure(text: str, dimensions: int = 512) -> list[float]:
     api_key = os.getenv("AZURE_OPENAI_API_KEY")
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     
     if not api_key or not endpoint:
-        print("Warning: AZURE_OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT is not set (MOCK mode).")
-        vec = np.random.randn(1536)
+        print(f"Warning: AZURE_OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT is not set (MOCK mode: {dimensions} dims).")
+        vec = np.random.randn(dimensions)
         vec /= np.linalg.norm(vec)
         return vec.tolist()
         
     try:
-        from openai import AzureOpenAI
+        from openai import AsyncAzureOpenAI
+        import httpx
         
         # プロキシによる TypeError: Client.__init__() got an unexpected keyword argument 'proxies' バグを回避
-        http_client = httpx.Client(proxy=None)
-        
-        client = AzureOpenAI(
-            api_key=api_key,
-            api_version=AZURE_OPENAI_API_VERSION,
-            azure_endpoint=endpoint,
-            http_client=http_client
-        )
-        
-        deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT", "text-embedding-3-small")
-        response = client.embeddings.create(
-            input=[text],
-            model=deployment_name
-        )
-        return response.data[0].embedding
+        async with httpx.AsyncClient(proxy=None) as http_client:
+            client = AsyncAzureOpenAI(
+                api_key=api_key,
+                api_version=AZURE_OPENAI_API_VERSION,
+                azure_endpoint=endpoint,
+                http_client=http_client
+            )
+            
+            deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT", "text-embedding-3-small")
+            response = await client.embeddings.create(
+                input=[text],
+                model=deployment_name,
+                dimensions=dimensions
+            )
+            return response.data[0].embedding
     except Exception as e:
         error_msg = f"[Azure Embeddingエラー] {e}"
         print(error_msg)
         raise RuntimeError(error_msg) from e
+
 
 def generate_rag_response(query: str, search_results: list[dict]) -> str:
     if not has_any_credentials():

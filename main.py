@@ -17,12 +17,16 @@ app = FastAPI(title="AI Native Local Knowledge Database")
 os.makedirs(config.IMAGE_DIR, exist_ok=True)
 app.mount("/local_images", StaticFiles(directory=config.IMAGE_DIR), name="local_images")
 
+import asyncio
+
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     # SQLite データベースの作成と初期フォルダのインサート
     sqlite_client.init_db()
     # LanceDB テーブルの作成
     lance_client.get_table()
+    # バックグラウンドマイグレーションの実行
+    asyncio.create_task(workflow.migrate_existing_data_to_v2())
 
 # トップページ (index.html) を直接サーブ
 @app.get("/", response_class=HTMLResponse)
@@ -649,7 +653,7 @@ def fix_folder(fix_data: FolderFix, background_tasks: BackgroundTasks):
 
 # 9. ハイブリッド検索 ＆ ローカルRAG
 @app.get("/api/search")
-def search_notes(q: str, limit: Optional[int] = None):
+async def search_notes(q: str, limit: Optional[int] = None):
     if not q.strip():
         raise HTTPException(status_code=400, detail="検索クエリは空にできません。")
         
@@ -671,7 +675,7 @@ def search_notes(q: str, limit: Optional[int] = None):
     print(f"[RAG Search] Original: '{q}' -> Optimized: '{optimized_q}', Threshold: {threshold}")
     
     # 最適化されたクエリをベクトル化
-    query_vector = ai_agent.generate_embedding_via_azure(optimized_q)
+    query_vector = await ai_agent.generate_embedding_via_azure(optimized_q, dimensions=512)
     
     # LanceDB でハイブリッド検索（最適化されたクエリと閾値を使用）
     search_results = lance_client.hybrid_search(query_vector, optimized_q, limit=limit, distance_threshold=threshold)

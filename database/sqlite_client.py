@@ -9,7 +9,7 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-LATEST_VERSION = 7
+LATEST_VERSION = 8
 
 def get_db_version(conn) -> int:
     cursor = conn.cursor()
@@ -238,6 +238,10 @@ def init_db():
                     cursor.execute("ALTER TABLE folders ADD COLUMN sort_order INTEGER DEFAULT 0")
                     cursor.execute("ALTER TABLE notes ADD COLUMN sort_order INTEGER DEFAULT 0")
                 
+                elif next_version == 8:
+                    # note_pages テーブルに analyzed_image_count カラムを追加
+                    cursor.execute("ALTER TABLE note_pages ADD COLUMN analyzed_image_count INTEGER DEFAULT 0")
+                
                 conn.commit()
             except Exception as e:
                 conn.rollback()
@@ -393,7 +397,7 @@ def update_note_metadata_merge(note_id: str, title: str, ai_ocr_text: str, ai_su
             )
         conn.commit()
 
-def update_page_metadata_merge(page_id: str, title: str, ai_ocr_text: str, ai_summary: str, ai_tags: str, parent_folder_id: str = None, status: str = "completed") -> None:
+def update_page_metadata_merge(page_id: str, title: str, ai_ocr_text: str, ai_summary: str, ai_tags: str, parent_folder_id: str = None, status: str = "completed", analyzed_image_count: int = None) -> None:
     now = datetime.datetime.now().isoformat()
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -401,14 +405,23 @@ def update_page_metadata_merge(page_id: str, title: str, ai_ocr_text: str, ai_su
         row = cursor.fetchone()
         note_id = row["note_id"] if row else None
         
-        # ページの更新
+        # ページの更新 (画像数に基づく競合上書きガード)
+        if analyzed_image_count is not None:
+            cursor.execute("SELECT analyzed_image_count FROM note_pages WHERE id = ?", (page_id,))
+            p_row = cursor.fetchone()
+            current_count = p_row["analyzed_image_count"] if p_row and p_row["analyzed_image_count"] is not None else 0
+            
+            if analyzed_image_count < current_count:
+                print(f"[Concurrency Guard] Skipped summary update for page {page_id}. Current count {current_count} > incoming count {analyzed_image_count}.")
+                return
+        
         cursor.execute(
             """
             UPDATE note_pages
-            SET ai_ocr_text = ?, ai_summary = ?, ai_tags = ?
+            SET ai_ocr_text = ?, ai_summary = ?, ai_tags = ?, analyzed_image_count = ?
             WHERE id = ?
             """,
-            (ai_ocr_text, ai_summary, ai_tags, page_id)
+            (ai_ocr_text, ai_summary, ai_tags, analyzed_image_count if analyzed_image_count is not None else 0, page_id)
         )
         
         # 親ノートの更新
@@ -521,13 +534,17 @@ def update_page_metadata(page_id: str, page_name: str, raw_text: str, reference_
         row = cursor.fetchone()
         note_id = row["note_id"] if row else None
         
+        # 紐づく画像数をカウントして、画像数スタンプとして保存
+        cursor.execute("SELECT COUNT(*) FROM note_images WHERE page_id = ? AND ai_ocr_text IS NOT NULL AND ai_ocr_text != ''", (page_id,))
+        img_count = cursor.fetchone()[0] or 0
+        
         cursor.execute(
             """
             UPDATE note_pages
-            SET page_name = ?, raw_text = ?, reference_urls = ?, ai_summary = ?, ai_tags = ?, ai_ocr_text = ?
+            SET page_name = ?, raw_text = ?, reference_urls = ?, ai_summary = ?, ai_tags = ?, ai_ocr_text = ?, analyzed_image_count = ?
             WHERE id = ?
             """,
-            (page_name, raw_text, reference_urls, ai_summary, ai_tags, ai_ocr_text, page_id)
+            (page_name, raw_text, reference_urls, ai_summary, ai_tags, ai_ocr_text, img_count, page_id)
         )
         if note_id:
             cursor.execute("UPDATE notes SET updated_at = ? WHERE id = ?", (now, note_id))
@@ -859,5 +876,38 @@ def reorder_notes(folder_id: str, note_ids: list[str]) -> None:
         for idx, n_id in enumerate(note_ids):
             cursor.execute("UPDATE notes SET sort_order = ? WHERE id = ? AND parent_folder_id = ?", (idx, n_id, folder_id))
         conn.commit()
+
+def get_all_pages_for_migration():
+    """
+    マイグレーション用に、すべてのノートページ（page_id, note_id, raw_text, ai_summary, ai_tags）と
+    添付ファイル（attachment_id, note_id, file_name, ai_ocr_text, ai_summary）を抽出して返す。
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # ページの取得
+        cursor.execute("""
+            SELECT p.id as page_id, n.id as note_id, p.raw_text, p.ai_summary, p.ai_tags
+            FROM note_pages p
+            JOIN notes n ON p.note_id = n.id
+        """)
+        pages = [dict(row) for row in cursor.fetchall()]
+        
+        # ページに紐づく画像OCRテキストの取得とマージ
+        for page in pages:
+            cursor.execute("SELECT ai_ocr_text FROM note_images WHERE page_id = ?", (page["page_id"],))
+            ocr_texts = [row[0] for row in cursor.fetchall() if row[0]]
+            page["merged_ocr_text"] = "\n\n".join(ocr_texts)
+            
+        # 添付ファイルの取得 (note_attachments)
+        cursor.execute("""
+            SELECT a.id as attachment_id, n.id as note_id, a.file_name, a.ai_ocr_text as extracted_text, a.ai_summary
+            FROM note_attachments a
+            JOIN notes n ON a.note_id = n.id
+        """)
+        attachments = [dict(row) for row in cursor.fetchall()]
+        
+        return pages, attachments
+
 
 

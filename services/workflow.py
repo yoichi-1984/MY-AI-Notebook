@@ -95,6 +95,7 @@ async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classi
             if structured_data.confidence_score < confidence_threshold or structured_data.suggested_folder_id == "unclassified" or not is_valid_folder:
                 # 仕分け保留 (pending_review)
                 title = structured_data.refined_title if structured_data.refined_title else "無題のノート"
+                analyzed_image_count = len(target_page.get("images", []))
                 sqlite_client.update_page_metadata_merge(
                     page_id=page_id,
                     title=title,
@@ -102,7 +103,8 @@ async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classi
                     ai_summary=structured_data.clean_summary,
                     ai_tags=",".join(structured_data.tags),
                     parent_folder_id=note["parent_folder_id"], # 元のフォルダ（通常は inbox）
-                    status="pending_review"
+                    status="pending_review",
+                    analyzed_image_count=analyzed_image_count
                 )
                 # WebSocketプッシュ送信
                 await broadcast_ws_message({
@@ -126,6 +128,7 @@ async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classi
             title = current_title
         tags_str = ",".join(structured_data.tags)
 
+        analyzed_image_count = len(target_page.get("images", []))
         sqlite_client.update_page_metadata_merge(
             page_id=page_id,
             title=title,
@@ -133,19 +136,30 @@ async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classi
             ai_summary=structured_data.clean_summary,
             ai_tags=tags_str,
             parent_folder_id=suggested_folder_id,
-            status=status
+            status=status,
+            analyzed_image_count=analyzed_image_count
         )
 
         # ベクトルデータの構築と登録
-        search_text = f"要約: {structured_data.clean_summary}\nタグ: {tags_str}"
-        vector = ai_agent.generate_embedding_via_azure(search_text)
+        summary_text = f"要約: {structured_data.clean_summary}"
+        tags_text = f"タグ: {tags_str}"
+        body_text = f"本文: {note.get('raw_text') or ''}"
+        
+        summary_vector, tags_vector, body_vector = await asyncio.gather(
+            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+        )
+        
+        fts_text = f"{note.get('raw_text') or ''}\n\n{structured_data.ocr_raw_text or ''}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
             note_id=note_id,
-            vector=vector,
-            search_text=search_text,
-            ocr_text=structured_data.ocr_raw_text
+            summary_vector=summary_vector,
+            tags_vector=tags_vector,
+            body_vector=body_vector,
+            fts_text=fts_text
         )
 
         # WebSocketプッシュ送信
@@ -274,15 +288,25 @@ async def update_rules_with_feedback(note_id: str, correct_folder_id: str, reaso
         )
 
         # ベクトルデータの再登録
-        search_text = f"要約: {first_page['ai_summary'] or ''}\nタグ: {first_page['ai_tags'] or ''}"
-        vector = ai_agent.generate_embedding_via_azure(search_text)
+        summary_text = f"要約: {first_page['ai_summary'] or ''}"
+        tags_text = f"タグ: {first_page['ai_tags'] or ''}"
+        body_text = f"本文: {first_page['raw_text'] or ''}"
+        
+        summary_vector, tags_vector, body_vector = await asyncio.gather(
+            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+        )
+        
+        fts_text = f"{first_page['raw_text'] or ''}\n\n{first_page['ai_ocr_text'] or ''}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
             note_id=note_id,
-            vector=vector,
-            search_text=search_text,
-            ocr_text=first_page["ai_ocr_text"] or ""
+            summary_vector=summary_vector,
+            tags_vector=tags_vector,
+            body_vector=body_vector,
+            fts_text=fts_text
         )
 
         # WebSocketで画面へ通知
@@ -381,19 +405,30 @@ async def process_new_image_workflow(note_id: str, page_id: str, image_id: str):
             ai_summary=summary_data.clean_summary,
             ai_tags=tags_str,
             parent_folder_id=updated_note["parent_folder_id"],
-            status="completed"
+            status="completed",
+            analyzed_image_count=len(all_ocr_texts)
         )
 
         # 6. ベクトル登録
-        search_text = f"要約: {summary_data.clean_summary}\nタグ: {tags_str}"
-        vector = ai_agent.generate_embedding_via_azure(search_text)
+        summary_text = f"要約: {summary_data.clean_summary}"
+        tags_text = f"タグ: {tags_str}"
+        body_text = f"本文: {updated_note.get('raw_text') or ''}"
+        
+        summary_vector, tags_vector, body_vector = await asyncio.gather(
+            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+        )
+        
+        fts_text = f"{updated_note.get('raw_text') or ''}\n\n{merged_ocr_text or ''}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
             note_id=note_id,
-            vector=vector,
-            search_text=search_text,
-            ocr_text=merged_ocr_text
+            summary_vector=summary_vector,
+            tags_vector=tags_vector,
+            body_vector=body_vector,
+            fts_text=fts_text
         )
 
         # 7. WebSocketプッシュ送信
@@ -464,18 +499,29 @@ async def recalculate_on_image_delete(note_id: str, page_id: str):
             ai_summary=summary_data.clean_summary,
             ai_tags=tags_str,
             parent_folder_id=note["parent_folder_id"],
-            status="completed"
+            status="completed",
+            analyzed_image_count=len(all_ocr_texts)
         )
 
-        search_text = f"要約: {summary_data.clean_summary}\nタグ: {tags_str}"
-        vector = ai_agent.generate_embedding_via_azure(search_text)
+        summary_text = f"要約: {summary_data.clean_summary}"
+        tags_text = f"タグ: {tags_str}"
+        body_text = f"本文: {note.get('raw_text') or ''}"
+        
+        summary_vector, tags_vector, body_vector = await asyncio.gather(
+            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+        )
+        
+        fts_text = f"{note.get('raw_text') or ''}\n\n{merged_ocr_text or ''}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
             note_id=note_id,
-            vector=vector,
-            search_text=search_text,
-            ocr_text=merged_ocr_text
+            summary_vector=summary_vector,
+            tags_vector=tags_vector,
+            body_vector=body_vector,
+            fts_text=fts_text
         )
 
         await broadcast_ws_message({
@@ -517,23 +563,30 @@ async def recalculate_vector_on_edit(note_id: str, page_id: str):
         if not target_page:
             return
 
-        search_text = f"要約: {target_page['ai_summary'] or ''}\nタグ: {target_page['ai_tags'] or ''}"
-        if not target_page['ai_summary'] and not target_page['ai_tags']:
-            search_text = target_page['raw_text'] or ""
-
-        vector = ai_agent.generate_embedding_via_azure(search_text)
+        summary_text = f"要約: {target_page['ai_summary'] or ''}"
+        tags_text = f"タグ: {target_page['ai_tags'] or ''}"
+        body_text = f"本文: {target_page['raw_text'] or ''}"
+        
+        summary_vector, tags_vector, body_vector = await asyncio.gather(
+            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+        )
         
         # 画像のOCRテキストをマージ
         images = target_page.get("images", [])
         all_ocr_texts = [img["ai_ocr_text"] for img in images if img["ai_ocr_text"]]
         merged_ocr_text = "\n\n".join(all_ocr_texts)
-
+        
+        fts_text = f"{target_page['raw_text'] or ''}\n\n{merged_ocr_text}"
+        
         lance_client.upsert_vector_data(
             page_id=page_id,
             note_id=note_id,
-            vector=vector,
-            search_text=search_text,
-            ocr_text=merged_ocr_text
+            summary_vector=summary_vector,
+            tags_vector=tags_vector,
+            body_vector=body_vector,
+            fts_text=fts_text
         )
         print(f"Recalculated embedding for note {note_id} page {page_id} after edit.")
     except Exception as e:
@@ -663,18 +716,25 @@ async def process_document_import_workflow(note_id: str, file_path: str, filenam
                 )
 
                 # LanceDBへの登録
-                search_text = f"要約: {ai_summary}\nタグ: {ai_tags}"
-                if raw_text:
-                    search_text += f"\n本文: {raw_text}"
+                summary_text = f"要約: {ai_summary}"
+                tags_text = f"タグ: {ai_tags}"
+                body_text = f"本文: {raw_text or ''}"
                 
-                vector = await asyncio.to_thread(ai_agent.generate_embedding_via_azure, search_text)
+                summary_vector, tags_vector, body_vector = await asyncio.gather(
+                    ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+                    ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+                    ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+                )
+                
+                fts_text = f"{raw_text or ''}\n\n{ocr_text or ''}"
                 
                 lance_client.upsert_vector_data(
                     page_id=page_id,
                     note_id=note_id,
-                    vector=vector,
-                    search_text=search_text,
-                    ocr_text=ocr_text
+                    summary_vector=summary_vector,
+                    tags_vector=tags_vector,
+                    body_vector=body_vector,
+                    fts_text=fts_text
                 )
 
             # 進捗の通知
@@ -849,18 +909,26 @@ async def process_attachment_ai_workflow(attachment_id: str):
 
         # 6. LanceDB へのベクトル登録（検索対応）
         if merged_text or ai_summary:
-            search_text = f"添付ファイル: {attachment['file_name']}\n要約: {ai_summary}"
-            if merged_text:
-                search_text += f"\n本文: {merged_text}"
+            summary_text = f"要約: {ai_summary}"
+            tags_text = f"タグ: 添付ファイル, {attachment['file_name']}"
+            body_text = f"本文: {merged_text or ''}"
             
             try:
-                vector = await asyncio.to_thread(ai_agent.generate_embedding_via_azure, search_text)
+                summary_vector, tags_vector, body_vector = await asyncio.gather(
+                    ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+                    ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+                    ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+                )
+                
+                fts_text = f"{attachment['file_name']}\n\n{merged_text or ''}"
+                
                 lance_client.upsert_vector_data(
                     page_id=attachment_id, # LanceDBには id = attachment_id で登録
                     note_id=note_id,
-                    vector=vector,
-                    search_text=search_text,
-                    ocr_text=merged_text
+                    summary_vector=summary_vector,
+                    tags_vector=tags_vector,
+                    body_vector=body_vector,
+                    fts_text=fts_text
                 )
             except Exception as ve:
                 print(f"[Warning] 添付ファイルのベクトル登録に失敗しました: {ve}")
@@ -891,3 +959,88 @@ async def process_attachment_ai_workflow(attachment_id: str):
             })
         except Exception as inner_e:
             print(f"Failed to handle error callback: {inner_e}")
+
+async def migrate_existing_data_to_v2():
+    """
+    スキーマ v2 (512次元マルチベクトル) へのデータ移行処理。
+    すでに v2 テーブルが存在し、データが入っている場合は何もしない。
+    テーブルが空の場合、SQLite から全データを取得して並行で再インデックス化する。
+    """
+    try:
+        table = lance_client.get_table()
+        # レコード件数を確認
+        count = len(table.to_arrow())
+        if count > 0:
+            print(f"[Migration] New table {lance_client.TABLE_NAME} already has {count} records. Skipping migration.")
+            return
+            
+        print("[Migration] Starting migration to 512-dimension multi-vector schema v2...")
+        
+        pages, attachments = sqlite_client.get_all_pages_for_migration()
+        print(f"[Migration] Found {len(pages)} pages and {len(attachments)} attachments to migrate.")
+        
+        # 1. ページの移行
+        for idx, page in enumerate(pages):
+            page_id = page["page_id"]
+            note_id = page["note_id"]
+            
+            summary_text = f"要約: {page['ai_summary'] or ''}"
+            tags_text = f"タグ: {page['ai_tags'] or ''}"
+            body_text = f"本文: {page['raw_text'] or ''}"
+            
+            try:
+                # 3つのベクトルを並行で取得
+                summary_vector, tags_vector, body_vector = await asyncio.gather(
+                    ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+                    ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+                    ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+                )
+                
+                fts_text = f"{page['raw_text'] or ''}\n\n{page['merged_ocr_text'] or ''}"
+                
+                lance_client.upsert_vector_data(
+                    page_id=page_id,
+                    note_id=note_id,
+                    summary_vector=summary_vector,
+                    tags_vector=tags_vector,
+                    body_vector=body_vector,
+                    fts_text=fts_text
+                )
+                print(f"[Migration] Page {idx+1}/{len(pages)} migrated.")
+            except Exception as e:
+                print(f"[Migration Warning] Failed to migrate page {page_id}: {e}")
+                
+        # 2. 添付ファイルの移行
+        for idx, att in enumerate(attachments):
+            att_id = att["attachment_id"]
+            note_id = att["note_id"]
+            
+            summary_text = f"要約: {att['ai_summary'] or ''}"
+            tags_text = f"タグ: 添付ファイル, {att['file_name'] or ''}"
+            body_text = f"本文: {att['extracted_text'] or ''}"
+            
+            try:
+                summary_vector, tags_vector, body_vector = await asyncio.gather(
+                    ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
+                    ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
+                    ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
+                )
+                
+                fts_text = f"{att['file_name'] or ''}\n\n{att['extracted_text'] or ''}"
+                
+                lance_client.upsert_vector_data(
+                    page_id=att_id,
+                    note_id=note_id,
+                    summary_vector=summary_vector,
+                    tags_vector=tags_vector,
+                    body_vector=body_vector,
+                    fts_text=fts_text
+                )
+                print(f"[Migration] Attachment {idx+1}/{len(attachments)} migrated.")
+            except Exception as e:
+                print(f"[Migration Warning] Failed to migrate attachment {att_id}: {e}")
+                
+        print("[Migration] Migration completed successfully.")
+    except Exception as e:
+        print(f"[Migration Error] Migration failed: {e}")
+
