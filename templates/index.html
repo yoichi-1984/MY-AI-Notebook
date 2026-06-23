@@ -742,11 +742,13 @@
 
         // フォルダ選択
         async function selectFolder(folderId, keepBackBtn = false) {
+            console.log("[UnsavedCheck] selectFolder called:", { folderId, keepBackBtn, currentFolderId, currentNoteId });
             if (currentFolderId !== folderId && currentNoteId) {
                 const action = await checkUnsavedChanges();
+                console.log("[UnsavedCheck] checkUnsavedChanges action result in selectFolder:", action);
                 if (action === 'cancel') {
                     renderFolders();
-                    return;
+                    return 'cancel';
                 }
             }
 
@@ -780,6 +782,7 @@
 
             // ノートリスト取得
             await fetchNotes();
+            return 'proceed';
         }
 
         // フォルダ作成ダイアログ
@@ -903,34 +906,69 @@
 
         // 現在アクティブなページに変更があるかチェックするヘルパー
         function hasUnsavedChangesForCurrentPage() {
-            if (!currentNoteId || !currentNote) return false;
+            if (!currentNoteId || !currentNote) {
+                console.log("[UnsavedCheck] No active note or note ID.");
+                return false;
+            }
             
             const currentRawTextEl = document.getElementById('detailRawText');
             const currentTitleEl = document.getElementById('detailTitle');
+            const currentSummaryEl = document.getElementById('detailSummary');
+            const currentTagsEl = document.getElementById('detailTags');
             
             const currentPage = (currentNote.pages || []).find(p => p.id === currentPageId);
             const pageRawText = currentPage ? currentPage.raw_text : '';
+            const pageSummary = currentPage ? currentPage.ai_summary : '';
+            const pageTags = currentPage ? currentPage.ai_tags : '';
 
             const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
-            const hasTextChanges = (normalizeText(currentRawTextEl.value) !== normalizeText(pageRawText));
-            const hasTitleChanges = (currentTitleEl.value.trim() !== (currentNote.title || '').trim());
+            const normCurrentText = normalizeText(currentRawTextEl.value);
+            const normPageText = normalizeText(pageRawText);
+            const hasTextChanges = (normCurrentText !== normPageText);
+            
+            const currentTitle = currentTitleEl.value.trim();
+            const savedTitle = (currentNote.title || '').trim();
+            const hasTitleChanges = (currentTitle !== savedTitle);
 
-            return hasTextChanges || hasTitleChanges;
+            const normCurrentSummary = normalizeText(currentSummaryEl.value);
+            const normPageSummary = normalizeText(pageSummary);
+            const hasSummaryChanges = (normCurrentSummary !== normPageSummary);
+
+            const normCurrentTags = currentTagsEl.value.split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
+            const normPageTags = pageTags.split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
+            const hasTagsChanges = (normCurrentTags !== normPageTags);
+
+            const isChanged = hasTextChanges || hasTitleChanges || hasSummaryChanges || hasTagsChanges;
+
+            console.log("[UnsavedCheck] Check result:", {
+                isChanged: isChanged,
+                currentPageId: currentPageId,
+                hasTextChanges: hasTextChanges,
+                hasTitleChanges: hasTitleChanges,
+                hasSummaryChanges: hasSummaryChanges,
+                hasTagsChanges: hasTagsChanges
+            });
+
+            return isChanged;
         }
 
         // 未保存の変更があるかチェックし、あればカスタムモーダルを表示してユーザーの決定を待つ
         function checkUnsavedChanges() {
+            console.log("[UnsavedCheck] checkUnsavedChanges called.");
             return new Promise((resolve) => {
                 if (!currentNoteId || !currentNote) {
+                    console.log("[UnsavedCheck] No active note, proceed.");
                     resolve('proceed');
                     return;
                 }
 
                 if (!hasUnsavedChangesForCurrentPage()) {
+                    console.log("[UnsavedCheck] No unsaved changes, proceed.");
                     resolve('proceed');
                     return;
                 }
 
+                console.log("[UnsavedCheck] Unsaved changes detected! Showing warning modal.");
                 const modal = document.getElementById('unsavedModal');
                 modal.classList.remove('hidden');
                 lucide.createIcons();
@@ -947,17 +985,20 @@
                 };
 
                 btnSave.onclick = async () => {
+                    console.log("[UnsavedCheck] User selected 'Save and proceed'.");
                     cleanup();
                     await savePageChanges();
                     resolve('proceed');
                 };
 
                 btnDiscard.onclick = () => {
+                    console.log("[UnsavedCheck] User selected 'Discard and proceed'.");
                     cleanup();
                     resolve('proceed');
                 };
 
                 btnCancel.onclick = () => {
+                    console.log("[UnsavedCheck] User selected 'Cancel'.");
                     cleanup();
                     resolve('cancel');
                 };
@@ -966,11 +1007,13 @@
 
         // ノート詳細の選択
         async function selectNote(noteId, forceOverwriteText = false, targetPageId = null) {
+            console.log("[UnsavedCheck] selectNote called:", { noteId, forceOverwriteText, targetPageId, currentNoteId });
             if (forceOverwriteText && currentNoteId && currentNoteId !== noteId) {
                 const action = await checkUnsavedChanges();
+                console.log("[UnsavedCheck] checkUnsavedChanges action result in selectNote:", action);
                 if (action === 'cancel') {
                     renderNotes();
-                    return;
+                    return 'cancel';
                 }
             }
 
@@ -1020,7 +1063,9 @@
             } catch (err) {
                 console.error(err);
                 showToast("ノートの読み込みに失敗しました", "error");
+                return 'error';
             }
+            return 'proceed';
         }
 
         // ページの選択・ロード
@@ -1859,12 +1904,13 @@
                     data.references.forEach(ref => {
                         const card = document.createElement('div');
                         card.className = 'p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-brand-500/50 cursor-pointer transition flex flex-col space-y-1';
-                        card.onclick = () => {
+                        card.onclick = async () => {
                             // 参照元をクリックしたらそのノートを詳細表示
                             closeSearchView(true); // 戻るボタンを表示するフラグを渡す
-                            selectFolder(ref.parent_folder_id, true).then(() => {
+                            const status = await selectFolder(ref.parent_folder_id, true);
+                            if (status !== 'cancel') {
                                 selectNote(ref.id, true, ref.page_id);
-                            });
+                            }
                         };
                         card.innerHTML = `
                             <div class="flex items-center justify-between">
