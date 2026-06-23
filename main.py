@@ -305,36 +305,41 @@ def update_note(note_id: str, note_data: NoteUpdate, background_tasks: Backgroun
     
     # 下位互換性のため、1番目のページの内容も更新する
     pages = note.get("pages", [])
-    if pages:
-        first_page = pages[0]
-        sqlite_client.update_page_metadata(
-            page_id=first_page["id"],
-            page_name=first_page["page_name"],
-            raw_text=note_data.raw_text,
-            reference_urls=note_data.reference_urls or "",
-            ai_summary=ai_summary or "",
-            ai_tags=ai_tags or ""
-        )
-        first_page_id = first_page["id"]
+    if len(pages) <= 1:
+        if pages:
+            first_page = pages[0]
+            sqlite_client.update_page_metadata(
+                page_id=first_page["id"],
+                page_name=first_page["page_name"],
+                raw_text=note_data.raw_text,
+                reference_urls=note_data.reference_urls or "",
+                ai_summary=ai_summary or "",
+                ai_tags=ai_tags or ""
+            )
+            first_page_id = first_page["id"]
+        else:
+            first_page_id = sqlite_client.create_page(note_id, "ページ1")
+            sqlite_client.update_page_metadata(
+                page_id=first_page_id,
+                page_name="ページ1",
+                raw_text=note_data.raw_text,
+                reference_urls=note_data.reference_urls or "",
+                ai_summary=ai_summary or "",
+                ai_tags=ai_tags or ""
+            )
+        
+        if is_inbox:
+            # 仮置き（自動整理）フォルダ所属の場合は自動仕分けをバックグラウンド実行
+            background_tasks.add_task(workflow.async_pipeline_workflow, note_id, first_page_id)
+            return {"status": "processing", "note_id": note_id, "page_id": first_page_id}
+        else:
+            # 通常フォルダ所属の場合は単にベクトル再計算
+            background_tasks.add_task(workflow.recalculate_vector_on_edit, note_id, first_page_id)
+            return {"status": "updated", "note_id": note_id, "page_id": first_page_id}
     else:
-        first_page_id = sqlite_client.create_page(note_id, "ページ1")
-        sqlite_client.update_page_metadata(
-            page_id=first_page_id,
-            page_name="ページ1",
-            raw_text=note_data.raw_text,
-            reference_urls=note_data.reference_urls or "",
-            ai_summary=ai_summary or "",
-            ai_tags=ai_tags or ""
-        )
-    
-    if is_inbox:
-        # 仮置き（自動整理）フォルダ所属の場合は自動仕分けをバックグラウンド実行
-        background_tasks.add_task(workflow.async_pipeline_workflow, note_id, first_page_id)
-        return {"status": "processing", "note_id": note_id, "page_id": first_page_id}
-    else:
-        # 通常フォルダ所属の場合は単にベクトル再計算
-        background_tasks.add_task(workflow.recalculate_vector_on_edit, note_id, first_page_id)
-        return {"status": "updated", "note_id": note_id, "page_id": first_page_id}
+        # 複数ページが存在する場合、親ノートのメタデータのみ更新し、各ページの内容は書き換えない。
+        # ベクトル再計算や自動仕分けも、個別のページ保存API側で処理されるためここでは行わない。
+        return {"status": "updated", "note_id": note_id}
 
 # 7.6. 特定ページへの一般ファイル添付・追加 (ノンブロッキング)
 @app.post("/api/notes/{note_id}/pages/{page_id}/attachments", status_code=status.HTTP_202_ACCEPTED)
