@@ -872,8 +872,8 @@
                 }
 
                 // タイトル決定 (未分類や空なら生テキストの切り抜き)
-                const displayTitle = note.title || note.raw_text.substring(0, 15) || '新規ノート(画像)...';
-                const snippet = note.ai_summary ? note.ai_summary.split('\n')[0] : note.raw_text.substring(0, 30);
+                const displayTitle = note.title || (note.raw_text || '').substring(0, 15) || '新規ノート(画像)...';
+                const snippet = note.ai_summary ? note.ai_summary.split('\n')[0] : (note.raw_text || '').substring(0, 30);
 
                 item.innerHTML = `
                     <div class="flex items-start justify-between space-x-2">
@@ -906,50 +906,60 @@
 
         // 現在アクティブなページに変更があるかチェックするヘルパー
         function hasUnsavedChangesForCurrentPage() {
-            if (!currentNoteId || !currentNote) {
-                console.log("[UnsavedCheck] No active note or note ID.");
+            try {
+                if (!currentNoteId || !currentNote) {
+                    console.log("[UnsavedCheck] No active note or note ID.");
+                    return false;
+                }
+                
+                const currentRawTextEl = document.getElementById('detailRawText');
+                const currentTitleEl = document.getElementById('detailTitle');
+                const currentSummaryEl = document.getElementById('detailSummary');
+                const currentTagsEl = document.getElementById('detailTags');
+                
+                if (!currentRawTextEl || !currentTitleEl || !currentSummaryEl || !currentTagsEl) {
+                    console.log("[UnsavedCheck] One of the detail editor elements is missing.");
+                    return false;
+                }
+                
+                const currentPage = (currentNote.pages || []).find(p => p.id === currentPageId);
+                const pageRawText = currentPage ? currentPage.raw_text : '';
+                const pageSummary = currentPage ? currentPage.ai_summary : '';
+                const pageTags = currentPage ? currentPage.ai_tags : '';
+
+                const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
+                const normCurrentText = normalizeText(currentRawTextEl.value);
+                const normPageText = normalizeText(pageRawText);
+                const hasTextChanges = (normCurrentText !== normPageText);
+                
+                const currentTitle = currentTitleEl.value.trim();
+                const savedTitle = (currentNote.title || '').trim();
+                const hasTitleChanges = (currentTitle !== savedTitle);
+
+                const normCurrentSummary = normalizeText(currentSummaryEl.value);
+                const normPageSummary = normalizeText(pageSummary);
+                const hasSummaryChanges = (normCurrentSummary !== normPageSummary);
+
+                const normCurrentTags = (currentTagsEl.value || '').split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
+                const normPageTags = (pageTags || '').split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
+                const hasTagsChanges = (normCurrentTags !== normPageTags);
+
+                const isChanged = hasTextChanges || hasTitleChanges || hasSummaryChanges || hasTagsChanges;
+
+                console.log("[UnsavedCheck] Check result:", {
+                    isChanged: isChanged,
+                    currentPageId: currentPageId,
+                    hasTextChanges: hasTextChanges,
+                    hasTitleChanges: hasTitleChanges,
+                    hasSummaryChanges: hasSummaryChanges,
+                    hasTagsChanges: hasTagsChanges
+                });
+
+                return isChanged;
+            } catch (err) {
+                console.error("[UnsavedCheck] Error in hasUnsavedChangesForCurrentPage:", err);
                 return false;
             }
-            
-            const currentRawTextEl = document.getElementById('detailRawText');
-            const currentTitleEl = document.getElementById('detailTitle');
-            const currentSummaryEl = document.getElementById('detailSummary');
-            const currentTagsEl = document.getElementById('detailTags');
-            
-            const currentPage = (currentNote.pages || []).find(p => p.id === currentPageId);
-            const pageRawText = currentPage ? currentPage.raw_text : '';
-            const pageSummary = currentPage ? currentPage.ai_summary : '';
-            const pageTags = currentPage ? currentPage.ai_tags : '';
-
-            const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
-            const normCurrentText = normalizeText(currentRawTextEl.value);
-            const normPageText = normalizeText(pageRawText);
-            const hasTextChanges = (normCurrentText !== normPageText);
-            
-            const currentTitle = currentTitleEl.value.trim();
-            const savedTitle = (currentNote.title || '').trim();
-            const hasTitleChanges = (currentTitle !== savedTitle);
-
-            const normCurrentSummary = normalizeText(currentSummaryEl.value);
-            const normPageSummary = normalizeText(pageSummary);
-            const hasSummaryChanges = (normCurrentSummary !== normPageSummary);
-
-            const normCurrentTags = currentTagsEl.value.split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
-            const normPageTags = pageTags.split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
-            const hasTagsChanges = (normCurrentTags !== normPageTags);
-
-            const isChanged = hasTextChanges || hasTitleChanges || hasSummaryChanges || hasTagsChanges;
-
-            console.log("[UnsavedCheck] Check result:", {
-                isChanged: isChanged,
-                currentPageId: currentPageId,
-                hasTextChanges: hasTextChanges,
-                hasTitleChanges: hasTitleChanges,
-                hasSummaryChanges: hasSummaryChanges,
-                hasTagsChanges: hasTagsChanges
-            });
-
-            return isChanged;
         }
 
         // 未保存の変更があるかチェックし、あればカスタムモーダルを表示してユーザーの決定を待つ
@@ -970,8 +980,16 @@
 
                 console.log("[UnsavedCheck] Unsaved changes detected! Showing warning modal.");
                 const modal = document.getElementById('unsavedModal');
-                modal.classList.remove('hidden');
-                lucide.createIcons();
+                if (modal) {
+                    modal.classList.remove('hidden');
+                }
+                if (typeof lucide !== 'undefined' && typeof lucide.createIcons === 'function') {
+                    try {
+                        lucide.createIcons();
+                    } catch (e) {
+                        console.error("[UnsavedCheck] Lucide icon creation failed:", e);
+                    }
+                }
 
                 const btnSave = document.getElementById('unsavedModalSave');
                 const btnDiscard = document.getElementById('unsavedModalDiscard');
@@ -1009,11 +1027,15 @@
         async function selectNote(noteId, forceOverwriteText = false, targetPageId = null) {
             console.log("[UnsavedCheck] selectNote called:", { noteId, forceOverwriteText, targetPageId, currentNoteId });
             if (forceOverwriteText && currentNoteId && currentNoteId !== noteId) {
-                const action = await checkUnsavedChanges();
-                console.log("[UnsavedCheck] checkUnsavedChanges action result in selectNote:", action);
-                if (action === 'cancel') {
-                    renderNotes();
-                    return 'cancel';
+                try {
+                    const action = await checkUnsavedChanges();
+                    console.log("[UnsavedCheck] checkUnsavedChanges action result in selectNote:", action);
+                    if (action === 'cancel') {
+                        renderNotes();
+                        return 'cancel';
+                    }
+                } catch (err) {
+                    console.error("[UnsavedCheck] Error during checkUnsavedChanges, proceeding anyway:", err);
                 }
             }
 
