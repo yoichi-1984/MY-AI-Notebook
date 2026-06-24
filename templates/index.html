@@ -743,6 +743,13 @@
         // フォルダ選択
         async function selectFolder(folderId, keepBackBtn = false) {
             console.log("[UnsavedCheck] selectFolder called:", { folderId, keepBackBtn, currentFolderId, currentNoteId });
+            
+            // 現在開いているノートがあり、同じフォルダがクリックされた場合はエディタを閉じずに維持する
+            if (currentFolderId === folderId && currentNoteId) {
+                console.log("[UnsavedCheck] Same folder clicked while note is open. Keeping note open.");
+                return 'proceed';
+            }
+
             if (currentFolderId !== folderId && currentNoteId) {
                 const action = await checkUnsavedChanges();
                 console.log("[UnsavedCheck] checkUnsavedChanges action result in selectFolder:", action);
@@ -797,8 +804,12 @@
                     body: JSON.stringify({ name: name.trim() })
                 });
                 if (res.ok) {
+                    const data = await res.json();
                     showToast("フォルダを作成しました", "success");
                     await fetchFolders();
+                    if (data.folder_id) {
+                        await selectFolder(data.folder_id);
+                    }
                 } else {
                     const err = await res.json();
                     showToast(err.detail || "フォルダ作成に失敗しました", "error");
@@ -1442,7 +1453,7 @@
             const ai_summary = customSummary !== null ? customSummary : document.getElementById('detailSummary').value;
             const ai_tags = customTags !== null ? customTags : document.getElementById('detailTags').value;
             const reference_urls = customUrlsList !== null ? customUrlsList.join('\n') : currentUrls.join('\n');
-            const parent_folder_id = currentNote.parent_folder_id || 'inbox';
+            const parent_folder_id = currentNote.parent_folder_id || currentFolderId || 'inbox';
             
             try {
                 // notes テーブルメタデータ更新
@@ -1490,11 +1501,11 @@
                 page.ai_tags = captureTags;
             }
             
-            // タイトル更新を非同期で走らせる（待機しない）
-            saveNoteChanges(false, captureTitle, captureRawText, captureSummary, captureTags, captureUrls);
-
-            // ページ保存APIの呼び出しを非同期（バックグラウンド）で実行
             return (async () => {
+                // タイトル・メタデータとページ本文の保存を直列実行する（ロック競合やAIタスクの二重起動防止）
+                await saveNoteChanges(false, captureTitle, captureRawText, captureSummary, captureTags, captureUrls);
+
+                // ページ保存APIの呼び出しを実行
                 try {
                     const res = await fetch(`/api/notes/${targetNoteId}/pages/${targetPageId}`, {
                         method: 'PUT',

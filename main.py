@@ -41,17 +41,20 @@ async def get_index():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    workflow.active_connections.append(websocket)
+    async with workflow._ws_lock:
+        workflow.active_connections.append(websocket)
     try:
         while True:
             # 切断検知のため受信ループを維持
             await websocket.receive_text()
     except WebSocketDisconnect:
-        if websocket in workflow.active_connections:
-            workflow.active_connections.remove(websocket)
+        async with workflow._ws_lock:
+            if websocket in workflow.active_connections:
+                workflow.active_connections.remove(websocket)
     except Exception:
-        if websocket in workflow.active_connections:
-            workflow.active_connections.remove(websocket)
+        async with workflow._ws_lock:
+            if websocket in workflow.active_connections:
+                workflow.active_connections.remove(websocket)
 
 # 1. インボックスへの雑多収集 (ノンブロッキング受付)
 @app.post("/api/save", status_code=status.HTTP_202_ACCEPTED)
@@ -341,8 +344,11 @@ def update_note(note_id: str, note_data: NoteUpdate, background_tasks: Backgroun
             background_tasks.add_task(workflow.recalculate_vector_on_edit, note_id, first_page_id)
             return {"status": "updated", "note_id": note_id, "page_id": first_page_id}
     else:
-        # 複数ページが存在する場合、親ノートのメタデータのみ更新し、各ページの内容は書き換えない。
-        # ベクトル再計算や自動仕分けも、個別のページ保存API側で処理されるためここでは行わない。
+        # 複数ページが存在する場合、親ノートのメタデータのみ更新し、各ページの生テキストは書き換えない。
+        # ただし全ページのベクトルをバックグラウンドで再計算して検索インデックスを最新化する。
+        pages = note.get("pages", [])
+        for page in pages:
+            background_tasks.add_task(workflow.recalculate_vector_on_edit, note_id, page["id"])
         return {"status": "updated", "note_id": note_id}
 
 # 7.6. 特定ページへの一般ファイル添付・追加 (ノンブロッキング)
@@ -516,9 +522,12 @@ def delete_note_image(note_id: str, image_id: str, background_tasks: BackgroundT
     note = sqlite_client.get_note(note_id)
     if not note:
         raise HTTPException(status_code=404, detail="ノートが見つかりません。")
-        
+
     pages = note.get("pages", [])
-    page_id = pages[0]["id"] if pages else "default"
+    if not pages:
+        # ページが存在しない場合は 404 を返す（"default" page_id のまま処理を続けると status が processing のまま残る）
+        raise HTTPException(status_code=404, detail="対象ノートにページが存在しません。画像を削除できません。")
+    page_id = pages[0]["id"]
     return delete_page_image(note_id, page_id, image_id, background_tasks)
 
 # 新規ページ追加 API
@@ -664,21 +673,21 @@ async def search_notes(q: str, limit: Optional[int] = None):
         except ValueError:
             limit = 5
             
-    # RAG足切り閾値の設定値をDBから取得
+    # RAG足切り閾値の設定値（コサイン距離：小さいほど厳しく、大きいほど緩い）をDBから取得
     try:
-        threshold = float(sqlite_client.get_setting("rag_threshold", "0.7"))
+        distance_threshold = float(sqlite_client.get_setting("rag_threshold", "0.8"))
     except ValueError:
-        threshold = 0.7
-        
+        distance_threshold = 0.8
+
     # クエリを高速に最適化
     optimized_q = ai_agent.optimize_search_query(q)
-    print(f"[RAG Search] Original: '{q}' -> Optimized: '{optimized_q}', Threshold: {threshold}")
-    
+    print(f"[RAG Search] Original: '{q}' -> Optimized: '{optimized_q}', Distance threshold: {distance_threshold}")
+
     # 最適化されたクエリをベクトル化
     query_vector = await ai_agent.generate_embedding_via_azure(optimized_q, dimensions=512)
-    
-    # LanceDB でハイブリッド検索（最適化されたクエリと閾値を使用）
-    search_results = lance_client.hybrid_search(query_vector, optimized_q, limit=limit, distance_threshold=threshold)
+
+    # LanceDB でハイブリッド検索（コサイン距離の閾値をそのまま使用）
+    search_results = lance_client.hybrid_search(query_vector, optimized_q, limit=limit, distance_threshold=distance_threshold)
     
     # SQLite 上のメタデータと結合
     matched_notes = []
@@ -696,6 +705,8 @@ async def search_notes(q: str, limit: Optional[int] = None):
                     "parent_folder_id": note["parent_folder_id"],
                     "ai_summary": note["ai_summary"],
                     "ai_tags": note["ai_tags"],
+                    "raw_text": note["raw_text"],
+                    "ai_ocr_text": note["ai_ocr_text"],
                     "image_path": note["image_path"],
                     "updated_at": note["updated_at"]
                 })
@@ -713,13 +724,15 @@ async def search_notes(q: str, limit: Optional[int] = None):
                     "parent_folder_id": note["parent_folder_id"],
                     "ai_summary": page["ai_summary"] if page else note["ai_summary"],
                     "ai_tags": page["ai_tags"] if page else note["ai_tags"],
+                    "raw_text": page["raw_text"] if page else note["raw_text"],
+                    "ai_ocr_text": page["ai_ocr_text"] if page else note["ai_ocr_text"],
                     "image_path": page["images"][0]["image_path"] if page and page.get("images") else note["image_path"],
                     "updated_at": note["updated_at"]
                 })
             
-    # ローカルRAGによる回答生成
+    # ローカルRAGによる回答生成（matched_notesをコンテキストとして渡す）
     if matched_notes:
-        answer = ai_agent.generate_rag_response(q, search_results)
+        answer = ai_agent.generate_rag_response(q, matched_notes)
     else:
         answer = "関連するナレッジが見つかりませんでした。"
         

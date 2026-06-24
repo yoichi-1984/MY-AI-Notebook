@@ -371,7 +371,7 @@ def update_note_metadata_merge(note_id: str, title: str, ai_ocr_text: str, ai_su
         current_title = row["title"] if row else None
         
         final_title = current_title
-        if not current_title or current_title == "無題 of ノート" or current_title == "無題のノート" or current_title.strip() == "":
+        if not current_title or current_title == "無題のノート" or current_title.strip() == "":
             final_title = title if title else "無題のノート"
 
         cursor.execute(
@@ -431,7 +431,7 @@ def update_page_metadata_merge(page_id: str, title: str, ai_ocr_text: str, ai_su
             current_title = n_row["title"] if n_row else None
             
             final_title = current_title
-            if not current_title or current_title == "無題 of ノート" or current_title == "無題のノート" or current_title.strip() == "":
+            if not current_title or current_title == "無題のノート" or current_title.strip() == "":
                 final_title = title if title else "無題のノート"
                 
             final_folder_id = parent_folder_id if parent_folder_id else (n_row["parent_folder_id"] if n_row else "inbox")

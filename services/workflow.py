@@ -6,17 +6,22 @@ import config
 from database import sqlite_client, lance_client
 from services import ai_agent
 
-# WebSocketアクティブ接続リスト
+# WebSocketアクティブ接続リストとロック
 active_connections = []
+_ws_lock = asyncio.Lock()
 
 async def broadcast_ws_message(message: dict):
-    """接続しているすべてのクライアントへ非同期でWebSocketメッセージを送信"""
-    for connection in list(active_connections):
-        try:
-            await connection.send_json(message)
-        except Exception:
-            if connection in active_connections:
-                active_connections.remove(connection)
+    """接続しているすべてのクライアントへ非同期でWebSocketメッセージを送信。asyncio.Lockでリスト競合を防止。"""
+    async with _ws_lock:
+        dead_connections = []
+        for connection in active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead_connections.append(connection)
+        for conn in dead_connections:
+            if conn in active_connections:
+                active_connections.remove(conn)
 
 async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classification: bool = False):
     """
@@ -245,7 +250,7 @@ async def update_rules_with_feedback(note_id: str, correct_folder_id: str, reaso
             【現在の仕分けルール (rules.md)】
             {rules_str}
 
-            この修正アクション of 事実から、今後の自動仕分けの判断基準となるガイドラインを抽出・アップデートしてください。
+            この修正アクションの事実から、今後の自動仕分けの判断基準となるガイドラインを抽出・アップデートしてください。
             既存のルールと矛盾しないように整理し、全体を綺麗に整理したMarkdownの箇条書き（および構成）として出力し直してください。
             余計な説明（「以下が更新されたルールです」など）は省き、純粋なMarkdownテキストのみを返してください。
             """
@@ -671,8 +676,8 @@ async def process_document_import_workflow(note_id: str, file_path: str, filenam
                 async with aiofiles.open(full_img_path, "wb") as img_f:
                     await img_f.write(image_bytes)
                 
-                # DBに画像レコードを追加
-                img_path_web = f"/local_images/{img_filename}"
+                # DBに画像レコードを追加（main.pyと同じ先頭スラッシュなしの形式で登録）
+                img_path_web = f"local_images/{img_filename}"
                 img_id = sqlite_client.add_page_image(note_id, page_id, img_path_web)
                 
                 # スキャンPDFや画像スライドなどの判定（抽出テキストが非常に少ない場合）
@@ -788,8 +793,11 @@ async def process_document_import_workflow(note_id: str, file_path: str, filenam
             reference_urls=""
         )
 
-        # 全体のraw_textも上書き更新（下位互換性のため）
-        sqlite_client.update_note_content(note_id, full_doc_raw_text)
+        # 注意: update_note_content（notes.raw_text + note_pages[0].raw_text の上書き）は呼び出さない。
+        # 各ページの raw_text はページ単位で note_pages に登録済みであり、
+        # 全ファイル結合テキストで note_pages[0].raw_text を上書きすると
+        # 1ページ目の内容が失われる（BUG-03相当）ため実行しない。
+        # notes.raw_text は互換性経路で get_note() が返す際に pages[0].raw_text で上書きされるため実害なし。
 
         # 6. 完了のWebSocket通知
         await broadcast_ws_message({
@@ -948,6 +956,10 @@ async def process_attachment_ai_workflow(attachment_id: str):
 
     except Exception as e:
         print(f"Error in process_attachment_ai_workflow for attachment {attachment_id}: {e}")
+        # note_id が None（添付ファイル取得前に例外発生）の場合は DB 更新・WS 送信をスキップ
+        if note_id is None:
+            print(f"[Error Callback Skip] note_id is None, skipping DB update and WebSocket notification.")
+            return
         try:
             sqlite_client.update_note_status(note_id, "completed")
             await broadcast_ws_message({

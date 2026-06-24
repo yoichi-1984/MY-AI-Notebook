@@ -77,65 +77,31 @@ def delete_all_vector_data_for_note(note_id: str):
 def migrate_to_v5(mappings: list[dict]):
     """
     スキーマv5への移行ロジック。
-    1. 旧テーブルから全データを読み出す。
-    2. 古いテーブルを削除し、新しいスキーマで再作成する。
-    3. SQLiteから渡された note_id と page_id のマッピングに基づいて、旧 id (note_id) のデータを id = page_id, note_id = note_id に変換。
-    4. 新しいテーブルにインサートする。
+    旧テーブル（スキーマ: vector/search_text/ocr_text）と現行テーブル（スキーマ: summary_vector/tags_vector/body_vector/fts_text）は
+    カラム構成が完全に異なるため、旧データをそのまま挿入するとデータ破壊が発生する。
+    そのため、テーブルのドロップ＆空テーブルの再作成のみを行い、データ再投入は起動時に実行される
+    migrate_existing_data_to_v2()（workflow.py）に委任する。
+    migrate_existing_data_to_v2() はテーブルが空のとき SQLite から全データを再インデックスするため、
+    データは安全に復元される。
     """
     global _db, _table
     if _db is None:
         _db = lancedb.connect(LANCEDB_DIR)
-        
-    # テーブルが存在しない場合は何も移行しない
+
+    # テーブルが存在しない場合は何もしない
     if TABLE_NAME not in _db.table_names():
+        print(f"[migrate_to_v5] Table '{TABLE_NAME}' does not exist. Skipping drop.")
         return
-        
-    old_table = _db.open_table(TABLE_NAME)
-    
-    # 全データの読み込み
-    try:
-        old_data = old_table.to_arrow().to_pylist()
-    except Exception as e:
-        print(f"Failed to read old LanceDB data: {e}")
-        old_data = []
-        
-    # マッピングの辞書化
-    # mappings: [{"note_id": "...", "page_id": "..."}]
-    note_to_page = {m["note_id"]: m["page_id"] for m in mappings}
-    
-    # 移行データの作成
-    new_data = []
-    for row in old_data:
-        old_id = row.get("id") # 旧スキーマでは note_id が格納されている
-        vector = row.get("vector")
-        search_text = row.get("search_text") or ""
-        ocr_text = row.get("ocr_text") or ""
-        
-        if old_id in note_to_page:
-            new_page_id = note_to_page[old_id]
-            new_data.append({
-                "id": new_page_id,
-                "note_id": old_id,
-                "vector": vector,
-                "search_text": search_text,
-                "ocr_text": ocr_text
-            })
-            
-    # 古いテーブルをドロップ
+
+    # 旧テーブルをドロップ（スキーマ不一致のデータ挿入を防ぐ）
     _db.drop_table(TABLE_NAME)
     _table = None
-    
-    # 新しいテーブルを作成
-    table = get_table()
-    
-    # データを投入
-    if new_data:
-        table.add(new_data)
-        try:
-            table.create_fts_index("ocr_text", replace=True)
-        except Exception as e:
-            print(f"Warning: Failed to create FTS index after migration: {e}")
-    print(f"LanceDB migration completed. Migrated {len(new_data)} records.")
+    print(f"[migrate_to_v5] Dropped old table '{TABLE_NAME}'.")
+
+    # 新スキーマでテーブルを再作成（空テーブル）
+    get_table()
+    print(f"[migrate_to_v5] Recreated empty table '{TABLE_NAME}' with new schema (multi-vector 512d).")
+    print("[migrate_to_v5] Re-indexing will be handled by migrate_existing_data_to_v2() on startup.")
 
 
 def hybrid_search(query_vector: list[float], query_text: str, limit: int = 5, distance_threshold: float = 0.7) -> list[dict]:

@@ -281,7 +281,7 @@ class ImageOcrSchema(BaseModel):
 class NoteSummarySchema(BaseModel):
     refined_title: str = Field(description="画像やテキストから自動生成した10〜20文字の洗練されたタイトル。既存のタイトル群のトーンに合わせること。")
     clean_summary: str = Field(description="ナレッジDBとして後から調査しやすいように、内容を綺麗に整理した3行の要約文。")
-    tags: list[str] = Field(description="意味検索を補強するための、関連する技術キーワードや文脈を表すタグ of 配列。")
+    tags: list[str] = Field(description="意味検索を補強するための、関連する技術キーワードや文脈を表すタグの配列。")
 
 def ocr_image_with_gemini(image_bytes: bytes) -> str:
     if not has_any_credentials():
@@ -360,7 +360,9 @@ def analyze_and_structure_with_gemini(image_bytes: bytes, raw_text: str, folder_
     if not has_any_credentials():
         print("Warning: No Gemini/Vertex credentials set. Running in MOCK mode.")
         import re
-        folder_ids = re.findall(r"'id': '([^']+)'", folder_list_string)
+        # workflow.py が生成するフォーマット: "- ID: '{id}', 名前: '{name}' (親ID: '{parent_id}')"
+        # 旧正規表現 r"'id': '([^']+)'" は Python dict の repr を探すものでこのフォーマットに一致しない。
+        folder_ids = re.findall(r"ID: '([^']+)'", folder_list_string)
         if not folder_ids:
             folder_ids = ["inbox"]
             
@@ -458,38 +460,46 @@ async def generate_embedding_via_azure(text: str, dimensions: int = 512) -> list
         raise RuntimeError(error_msg) from e
 
 
-def generate_rag_response(query: str, search_results: list[dict]) -> str:
+def generate_rag_response(query: str, matched_notes: list[dict]) -> str:
+    """
+    SQLiteメタデータと結合済みの matched_notes（title / ai_summary / ai_tags / ai_ocr_text を含む）
+    をコンテキストとして Gemini に渡し、RAG回答を生成する。
+    """
     if not has_any_credentials():
         print("Warning: No Gemini/Vertex credentials set (MOCK RAG mode).")
-        notes_summary = "\n".join([f"- ID: {r['id']}, 要約: {r['search_text'][:60]}..." for r in search_results])
+        notes_summary = "\n".join(
+            [f"- タイトル: {r.get('title','')}, 要約: {str(r.get('ai_summary',''))[:60]}..." for r in matched_notes]
+        )
         return (
             f"【モックRAG回答】\nユーザーの質問: 「{query}」に対する回答シミュレーションです。\n\n"
             f"検索にヒットしたコンテキスト:\n{notes_summary}\n\n"
             f"※認証情報が設定されると、実際のローカル知識に基づくGeminiの生成回答が表示されます。"
         )
-        
+
     context_parts = []
-    for r in search_results:
+    for r in matched_notes:
         context_parts.append(
-            f"【ノートID: {r['id']}】\n"
-            f"【ナレッジ要約・メタデータ】\n{r['search_text']}\n"
-            f"【生OCRテキスト】\n{r['ocr_text']}"
+            f"【ノートID: {r.get('id','')} / ページ: {r.get('page_name','ページ')} 】\n"
+            f"タイトル: {r.get('title','')}\n"
+            f"【AI要約・タグ】\n{r.get('ai_summary','')}\nタグ: {r.get('ai_tags','')}\n"
+            f"【ユーザー手書きメモ本文】\n{r.get('raw_text','') or ''}\n"
+            f"【画像OCRテキスト】\n{r.get('ai_ocr_text','') or ''}"
         )
     context = "\n\n---\n\n".join(context_parts)
-    
+
     system_instruction = f"""
     あなたはユーザーが持つローカルナレッジベースに基づいて回答する超優秀なAIアシスタントです。
     提供される【コンテキスト】の内容のみを「唯一の絶対的なソース（事実）」として、ユーザーの質問に日本語で回答してください。
-    
+
     【厳格ルール】
     1. 提供された各ノート（チャンク）について、それがユーザーの質問に回答するために本当に関連しているか、役に立つかを個別に評価してください。
     2. 質問と関連がない、または役に立たないと判断したコンテキストの情報は、回答の生成において完全に無視してください。
     3. 提供された情報から直接的・間接的に判断できない場合は、絶対に知ったかぶりや推測をせず、「提供されたナレッジからは分かりませんでした」と明確に回答してください。
-    
+
     【コンテキスト】
     {context}
     """
-    
+
     try:
         response = generate_content_with_fallback(
             contents=query,
@@ -498,13 +508,15 @@ def generate_rag_response(query: str, search_results: list[dict]) -> str:
         return response.text
     except Exception as e:
         print(f"Failed to generate RAG response: {e}. Running RAG in MOCK mode.")
-        notes_summary = "\n".join([f"- ID: {r['id']}, 要約: {r['search_text'][:60]}..." for r in search_results])
+        notes_summary = "\n".join(
+            [f"- タイトル: {r.get('title','')}, 要約: {str(r.get('ai_summary',''))[:60]}..." for r in matched_notes]
+        )
         return (
             f"【RAGエラーフォールバック回答】\n"
             f"APIエラーにより実際の回答生成に失敗しました。\n"
             f"検索にヒットしたコンテキスト概要:\n{notes_summary}"
         )
-stream = False
+
 
 def optimize_search_query(query: str) -> str:
     """
