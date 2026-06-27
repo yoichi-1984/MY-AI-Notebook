@@ -548,17 +548,18 @@ def update_page_metadata(page_id: str, page_name: str, raw_text: str, reference_
         row = cursor.fetchone()
         note_id = row["note_id"] if row else None
         
-        # 紐づく画像数をカウントして、画像数スタンプとして保存
-        cursor.execute("SELECT COUNT(*) FROM note_images WHERE page_id = ? AND ai_ocr_text IS NOT NULL AND ai_ocr_text != ''", (page_id,))
-        img_count = cursor.fetchone()[0] or 0
-        
+        if ai_ocr_text is None:
+            cursor.execute("SELECT ai_ocr_text FROM note_pages WHERE id = ?", (page_id,))
+            p_row = cursor.fetchone()
+            ai_ocr_text = p_row["ai_ocr_text"] if p_row else None
+            
         cursor.execute(
             """
             UPDATE note_pages
-            SET page_name = ?, raw_text = ?, reference_urls = ?, ai_summary = ?, ai_tags = ?, ai_ocr_text = ?, analyzed_image_count = ?
+            SET page_name = ?, raw_text = ?, reference_urls = ?, ai_summary = ?, ai_tags = ?, ai_ocr_text = ?
             WHERE id = ?
             """,
-            (page_name, raw_text, reference_urls, ai_summary, ai_tags, ai_ocr_text, img_count, page_id)
+            (page_name, raw_text, reference_urls, ai_summary, ai_tags, ai_ocr_text, page_id)
         )
         if note_id:
             cursor.execute("UPDATE notes SET updated_at = ? WHERE id = ?", (now, note_id))
@@ -755,42 +756,7 @@ def delete_folder(folder_id: str, delete_notes: bool = False) -> None:
                 "UPDATE notes SET parent_folder_id = 'inbox', updated_at = ? WHERE parent_folder_id = ?",
                 (now, folder_id)
             )
-        else:
-            # 物理削除: FK 依存順に関連レコードをすべて削除してから notes を削除する
-            # （PRAGMA foreign_keys は明示ONしていないため CASCADE が効かない）
-            cursor.execute(
-                """
-                DELETE FROM note_images WHERE note_id IN (
-                    SELECT id FROM notes WHERE parent_folder_id = ?
-                )
-                """,
-                (folder_id,)
-            )
-            cursor.execute(
-                """
-                DELETE FROM note_attachments WHERE note_id IN (
-                    SELECT id FROM notes WHERE parent_folder_id = ?
-                )
-                """,
-                (folder_id,)
-            )
-            cursor.execute(
-                """
-                DELETE FROM tasks WHERE note_id IN (
-                    SELECT id FROM notes WHERE parent_folder_id = ?
-                )
-                """,
-                (folder_id,)
-            )
-            cursor.execute(
-                """
-                DELETE FROM note_pages WHERE note_id IN (
-                    SELECT id FROM notes WHERE parent_folder_id = ?
-                )
-                """,
-                (folder_id,)
-            )
-            cursor.execute("DELETE FROM notes WHERE parent_folder_id = ?", (folder_id,))
+        
 
         cursor.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
         conn.commit()

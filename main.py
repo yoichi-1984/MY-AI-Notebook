@@ -606,11 +606,16 @@ def delete_note_image(note_id: str, image_id: str, background_tasks: BackgroundT
         raise HTTPException(status_code=404, detail="ノートが見つかりません。")
 
     pages = note.get("pages", [])
-    if not pages:
-        # ページが存在しない場合は 404 を返す（"default" page_id のまま処理を続けると status が processing のまま残る）
-        raise HTTPException(status_code=404, detail="対象ノートにページが存在しません。画像を削除できません。")
-    page_id = pages[0]["id"]
-    return delete_page_image(note_id, page_id, image_id, background_tasks)
+    target_page_id = None
+    for p in pages:
+        if any(img["id"] == image_id for img in p.get("images", [])):
+            target_page_id = p["id"]
+            break
+            
+    if not target_page_id:
+        raise HTTPException(status_code=404, detail="対象ノート内に指定された画像が存在しません。")
+        
+    return delete_page_image(note_id, target_page_id, image_id, background_tasks)
 
 # 新規ページ追加 API
 class PageCreate(BaseModel):
@@ -755,103 +760,111 @@ def fix_folder(fix_data: FolderFix, background_tasks: BackgroundTasks):
 # 9. ハイブリッド検索 ＆ ローカルRAG
 @app.get("/api/search")
 async def search_notes(q: str, limit: Optional[int] = None):
-    if not current_network_online:
-        raise HTTPException(status_code=503, detail="ネットワーク不通のため、AI質問は一時的に利用できません。")
-    if not q.strip():
-        raise HTTPException(status_code=400, detail="検索クエリは空にできません。")
-        
-    # RAG参照数の設定値をDBから取得
-    if limit is None:
-        try:
-            limit = int(sqlite_client.get_setting("rag_limit", "5"))
-        except ValueError:
-            limit = 5
-            
-    # RAG足切り閾値の設定値（コサイン距離：小さいほど厳しく、大きいほど緩い）をDBから取得
     try:
-        distance_threshold = float(sqlite_client.get_setting("rag_threshold", "0.8"))
-    except ValueError:
-        distance_threshold = 0.8
-
-    # クエリを高速に最適化
-    optimized_q = ai_agent.optimize_search_query(q)
-    print(f"[RAG Search] Original: '{q}' -> Optimized: '{optimized_q}', Distance threshold: {distance_threshold}")
-
-    # 最適化されたクエリをベクトル化
-    query_vector = await ai_agent.generate_embedding_via_azure(optimized_q, dimensions=512)
-
-    # LanceDB でハイブリッド検索（コサイン距離の閾値をそのまま使用）
-    search_results = lance_client.hybrid_search(query_vector, optimized_q, limit=limit, distance_threshold=distance_threshold)
-    
-    # SQLite 上のメタデータと結合
-    matched_notes = []
-    for r in search_results:
-        note_id = r.get("note_id")
-        if not note_id:
-            # 移行前の古いインデックスに対する互換性フォールバック
-            note = sqlite_client.get_note(r["id"])
-            if note:
-                matched_notes.append({
-                    "id": note["id"],
-                    "page_id": note["pages"][0]["id"] if note.get("pages") else None,
-                    "page_name": "ページ1",
-                    "title": note["title"],
-                    "parent_folder_id": note["parent_folder_id"],
-                    "ai_summary": note["ai_summary"],
-                    "ai_tags": note["ai_tags"],
-                    "raw_text": note["raw_text"],
-                    "ai_ocr_text": note["ai_ocr_text"],
-                    "image_path": note["image_path"],
-                    "updated_at": note["updated_at"]
-                })
-        else:
-            note = sqlite_client.get_note(note_id)
-            if note:
-                # 該当するページまたは添付ファイルを取得
-                page = next((p for p in note.get("pages", []) if p["id"] == r["id"]), None)
-                attachment = next((a for p in note.get("pages", []) for a in p.get("attachments", []) if a["id"] == r["id"]), None)
+        if not current_network_online:
+            raise HTTPException(status_code=503, detail="ネットワーク不通のため、AI質問は一時的に利用できません。")
+        if not q.strip():
+            raise HTTPException(status_code=400, detail="検索クエリは空にできません。")
+            
+        # RAG参照数の設定値をDBから取得
+        if limit is None:
+            try:
+                limit = int(sqlite_client.get_setting("rag_limit", "5"))
+            except ValueError:
+                limit = 5
                 
-                if attachment:
+        # RAG足切り閾値の設定値（コサイン距離：小さいほど厳しく、大きいほど緩い）をDBから取得
+        try:
+            distance_threshold = float(sqlite_client.get_setting("rag_threshold", "0.8"))
+        except ValueError:
+            distance_threshold = 0.8
+
+        # クエリを高速に最適化
+        optimized_q = ai_agent.optimize_search_query(q)
+        print(f"[RAG Search] Original: '{q}' -> Optimized: '{optimized_q}', Distance threshold: {distance_threshold}")
+
+        # 最適化されたクエリをベクトル化
+        query_vector = await ai_agent.generate_embedding_via_azure(optimized_q, dimensions=512)
+
+        # LanceDB でハイブリッド検索（コサイン距離の閾値をそのまま使用）
+        search_results = lance_client.hybrid_search(query_vector, optimized_q, limit=limit, distance_threshold=distance_threshold)
+        
+        # SQLite 上のメタデータと結合
+        matched_notes = []
+        for r in search_results:
+            note_id = r.get("note_id")
+            if not note_id:
+                # 移行前の古いインデックスに対する互換性フォールバック
+                note = sqlite_client.get_note(r["id"])
+                if note:
                     matched_notes.append({
                         "id": note["id"],
-                        "page_id": r["id"],
-                        "page_name": f"添付ファイル: {attachment['file_name']}",
-                        "title": f"{note['title']} > 添付: {attachment['file_name']}",
+                        "page_id": note["pages"][0]["id"] if note.get("pages") else None,
+                        "page_name": "ページ1",
+                        "title": note["title"],
                         "parent_folder_id": note["parent_folder_id"],
-                        "ai_summary": attachment.get("ai_summary", ""),
-                        "ai_tags": "添付ファイル",
-                        "raw_text": attachment.get("ai_ocr_text", ""),
-                        "ai_ocr_text": attachment.get("ai_ocr_text", ""),
+                        "ai_summary": note["ai_summary"],
+                        "ai_tags": note["ai_tags"],
+                        "raw_text": note["raw_text"],
+                        "ai_ocr_text": note["ai_ocr_text"],
                         "image_path": note["image_path"],
                         "updated_at": note["updated_at"]
                     })
-                else:
-                    page_name = page["page_name"] if page else "ページ1"
-                    matched_notes.append({
-                        "id": note["id"],
-                        "page_id": r["id"],
-                        "page_name": page_name,
-                        "title": f"{note['title']} > {page_name}",
-                        "parent_folder_id": note["parent_folder_id"],
-                        "ai_summary": page["ai_summary"] if page else note["ai_summary"],
-                        "ai_tags": page["ai_tags"] if page else note["ai_tags"],
-                        "raw_text": page["raw_text"] if page else note["raw_text"],
-                        "ai_ocr_text": page["ai_ocr_text"] if page else note["ai_ocr_text"],
-                        "image_path": page["images"][0]["image_path"] if page and page.get("images") else note["image_path"],
-                        "updated_at": note["updated_at"]
-                    })
+            else:
+                note = sqlite_client.get_note(note_id)
+                if note:
+                    # 該当するページまたは添付ファイルを取得
+                    page = next((p for p in note.get("pages", []) if p["id"] == r["id"]), None)
+                    attachment = next((a for p in note.get("pages", []) for a in p.get("attachments", []) if a["id"] == r["id"]), None)
+                    
+                    if attachment:
+                        matched_notes.append({
+                            "id": note["id"],
+                            "page_id": r["id"],
+                            "page_name": f"添付ファイル: {attachment['file_name']}",
+                            "title": f"{note['title']} > 添付: {attachment['file_name']}",
+                            "parent_folder_id": note["parent_folder_id"],
+                            "ai_summary": attachment.get("ai_summary", ""),
+                            "ai_tags": "添付ファイル",
+                            "raw_text": attachment.get("ai_ocr_text", ""),
+                            "ai_ocr_text": attachment.get("ai_ocr_text", ""),
+                            "image_path": note["image_path"],
+                            "updated_at": note["updated_at"]
+                        })
+                    else:
+                        page_name = page["page_name"] if page else "ページ1"
+                        matched_notes.append({
+                            "id": note["id"],
+                            "page_id": r["id"],
+                            "page_name": page_name,
+                            "title": f"{note['title']} > {page_name}",
+                            "parent_folder_id": note["parent_folder_id"],
+                            "ai_summary": page["ai_summary"] if page else note["ai_summary"],
+                            "ai_tags": page["ai_tags"] if page else note["ai_tags"],
+                            "raw_text": page["raw_text"] if page else note["raw_text"],
+                            "ai_ocr_text": page["ai_ocr_text"] if page else note["ai_ocr_text"],
+                            "image_path": page["images"][0]["image_path"] if page and page.get("images") else note["image_path"],
+                            "updated_at": note["updated_at"]
+                        })
+                
+        # ローカルRAGによる回答生成（matched_notesをコンテキストとして渡す）
+        if matched_notes:
+            answer = ai_agent.generate_rag_response(q, matched_notes)
+        else:
+            answer = "関連するナレッジが見つかりませんでした。"
             
-    # ローカルRAGによる回答生成（matched_notesをコンテキストとして渡す）
-    if matched_notes:
-        answer = ai_agent.generate_rag_response(q, matched_notes)
-    else:
-        answer = "関連するナレッジが見つかりませんでした。"
-        
-    return {
-        "answer": answer,
-        "references": matched_notes,
-        "optimized_query": optimized_q
-    }
+        return {
+            "answer": answer,
+            "references": matched_notes,
+            "optimized_query": optimized_q
+        }
+    except HTTPException:
+        raise
+    except ai_agent.OfflineException as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        print(f"Search API error: {e}")
+        raise HTTPException(status_code=500, detail=f"内部エラーが発生しました: {str(e)}")
 
 # 10. 設定用スキーマとAPI
 class SettingsUpdate(BaseModel):
