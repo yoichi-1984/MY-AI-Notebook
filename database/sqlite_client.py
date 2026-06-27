@@ -9,7 +9,7 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-LATEST_VERSION = 8
+LATEST_VERSION = 9
 
 def get_db_version(conn) -> int:
     cursor = conn.cursor()
@@ -241,6 +241,20 @@ def init_db():
                 elif next_version == 8:
                     # note_pages テーブルに analyzed_image_count カラムを追加
                     cursor.execute("ALTER TABLE note_pages ADD COLUMN analyzed_image_count INTEGER DEFAULT 0")
+                
+                elif next_version == 9:
+                    # api_jobs テーブル (API不通時のキュー管理) の新規作成
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS api_jobs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            job_type TEXT NOT NULL,
+                            params TEXT NOT NULL,
+                            status TEXT NOT NULL,
+                            error_message TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
                 
                 conn.commit()
             except Exception as e:
@@ -913,6 +927,65 @@ def get_all_pages_for_migration():
         attachments = [dict(row) for row in cursor.fetchall()]
         
         return pages, attachments
+
+
+def add_api_job(job_type: str, params: dict) -> int:
+    import json
+    params_str = json.dumps(params, ensure_ascii=False)
+    now = datetime.datetime.now().isoformat()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO api_jobs (job_type, params, status, created_at, updated_at)
+            VALUES (?, ?, 'pending', ?, ?)
+            """,
+            (job_type, params_str, now, now)
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_pending_api_jobs() -> list:
+    import json
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, job_type, params, status, error_message, created_at, updated_at FROM api_jobs WHERE status = 'pending' ORDER BY id ASC"
+        )
+        rows = cursor.fetchall()
+        jobs = []
+        for row in rows:
+            job_dict = dict(row)
+            try:
+                job_dict["params"] = json.loads(job_dict["params"])
+            except Exception:
+                pass
+            jobs.append(job_dict)
+        return jobs
+
+
+def update_api_job_status(job_id: int, status: str, error_message: str = None) -> None:
+    now = datetime.datetime.now().isoformat()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE api_jobs
+            SET status = ?, error_message = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, error_message, now, job_id)
+        )
+        conn.commit()
+
+
+def delete_api_job(job_id: int) -> None:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM api_jobs WHERE id = ?", (job_id,))
+        conn.commit()
+
 
 
 

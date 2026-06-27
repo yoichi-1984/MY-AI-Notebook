@@ -183,16 +183,28 @@ async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classi
         print(f"Error in async_pipeline_workflow for note {note_id} (page {page_id}): {e}")
         # 例外発生時は保留扱いで画面通知
         try:
-            sqlite_client.update_note_status(note_id, "pending_review")
-            await broadcast_ws_message({
-                "type": "pending_review",
-                "note_id": note_id,
-                "page_id": page_id,
-                "title": "エラーが発生したノート",
-                "folder_id": "inbox",
-                "confidence_score": 0.0,
-                "error": str(e)
-            })
+            if isinstance(e, ai_agent.OfflineException):
+                sqlite_client.update_note_status(note_id, "offline_queued")
+                sqlite_client.add_api_job("pipeline", {"note_id": note_id, "page_id": page_id, "skip_classification": skip_classification})
+                await broadcast_ws_message({
+                    "type": "offline_queued",
+                    "note_id": note_id,
+                    "page_id": page_id,
+                    "title": "オフライン処理待ちのノート",
+                    "folder_id": note["parent_folder_id"] if note else "inbox",
+                    "message": "オフラインのため、接続復帰後に自動処理します。"
+                })
+            else:
+                sqlite_client.update_note_status(note_id, "pending_review")
+                await broadcast_ws_message({
+                    "type": "pending_review",
+                    "note_id": note_id,
+                    "page_id": page_id,
+                    "title": "エラーが発生したノート",
+                    "folder_id": "inbox",
+                    "confidence_score": 0.0,
+                    "error": str(e)
+                })
         except Exception as inner_e:
             print(f"Failed to handle error callback: {inner_e}")
 
@@ -328,6 +340,8 @@ async def update_rules_with_feedback(note_id: str, correct_folder_id: str, reaso
 
     except Exception as e:
         print(f"Error in update_rules_with_feedback for note {note_id}: {e}")
+        if isinstance(e, ai_agent.OfflineException):
+            sqlite_client.add_api_job("feedback_learning", {"note_id": note_id, "correct_folder_id": correct_folder_id, "reason": reason})
 
 async def process_new_image_workflow(note_id: str, page_id: str, image_id: str):
     """
@@ -451,15 +465,27 @@ async def process_new_image_workflow(note_id: str, page_id: str, image_id: str):
     except Exception as e:
         print(f"Error in process_new_image_workflow for note {note_id}: {e}")
         try:
-            sqlite_client.update_note_status(note_id, "completed")
-            await broadcast_ws_message({
-                "type": "completed",
-                "note_id": note_id,
-                "page_id": page_id,
-                "title": "解析エラー",
-                "folder_id": note["parent_folder_id"] if note else "inbox",
-                "error": str(e)
-            })
+            if isinstance(e, ai_agent.OfflineException):
+                sqlite_client.update_note_status(note_id, "offline_queued")
+                sqlite_client.add_api_job("new_image", {"note_id": note_id, "page_id": page_id, "image_id": image_id})
+                await broadcast_ws_message({
+                    "type": "offline_queued",
+                    "note_id": note_id,
+                    "page_id": page_id,
+                    "title": "オフライン処理待ちのノート",
+                    "folder_id": note["parent_folder_id"] if note else "inbox",
+                    "message": "オフラインのため、接続復帰後に画像解析を自動処理します。"
+                })
+            else:
+                sqlite_client.update_note_status(note_id, "completed")
+                await broadcast_ws_message({
+                    "type": "completed",
+                    "note_id": note_id,
+                    "page_id": page_id,
+                    "title": "解析エラー",
+                    "folder_id": note["parent_folder_id"] if note else "inbox",
+                    "error": str(e)
+                })
         except Exception as inner_e:
             print(f"Failed to handle error callback: {inner_e}")
 
@@ -597,6 +623,8 @@ async def recalculate_vector_on_edit(note_id: str, page_id: str):
         print(f"Recalculated embedding for note {note_id} page {page_id} after edit.")
     except Exception as e:
         print(f"Error in recalculate_vector_on_edit for note {note_id} page {page_id}: {e}")
+        if isinstance(e, ai_agent.OfflineException):
+            sqlite_client.add_api_job("recalculate_embedding", {"note_id": note_id, "page_id": page_id})
 
 async def process_document_import_workflow(note_id: str, file_path: str, filename: str):
     """
@@ -956,20 +984,31 @@ async def process_attachment_ai_workflow(attachment_id: str):
 
     except Exception as e:
         print(f"Error in process_attachment_ai_workflow for attachment {attachment_id}: {e}")
-        # note_id が None（添付ファイル取得前に例外発生）の場合は DB 更新・WS 送信をスキップ
         if note_id is None:
             print(f"[Error Callback Skip] note_id is None, skipping DB update and WebSocket notification.")
             return
         try:
-            sqlite_client.update_note_status(note_id, "completed")
-            await broadcast_ws_message({
-                "type": "completed",
-                "note_id": note_id,
-                "page_id": page_id,
-                "title": "解析失敗",
-                "folder_id": note["parent_folder_id"] if note else "inbox",
-                "error": f"添付ファイルの解析中にエラーが発生しました: {e}"
-            })
+            if isinstance(e, ai_agent.OfflineException):
+                sqlite_client.update_note_status(note_id, "offline_queued")
+                sqlite_client.add_api_job("attachment", {"attachment_id": attachment_id})
+                await broadcast_ws_message({
+                    "type": "offline_queued",
+                    "note_id": note_id,
+                    "page_id": page_id,
+                    "title": "オフライン処理待ちのノート",
+                    "folder_id": note["parent_folder_id"] if note else "inbox",
+                    "message": "オフラインのため、接続復帰後に添付ファイル解析を自動処理します。"
+                })
+            else:
+                sqlite_client.update_note_status(note_id, "completed")
+                await broadcast_ws_message({
+                    "type": "completed",
+                    "note_id": note_id,
+                    "page_id": page_id,
+                    "title": "解析失敗",
+                    "folder_id": note["parent_folder_id"] if note else "inbox",
+                    "error": f"添付ファイルの解析中にエラーが発生しました: {e}"
+                })
         except Exception as inner_e:
             print(f"Failed to handle error callback: {inner_e}")
 
@@ -1056,4 +1095,60 @@ async def migrate_existing_data_to_v2():
         print("[Migration] Migration completed successfully.")
     except Exception as e:
         print(f"[Migration Error] Migration failed: {e}")
+
+
+async def process_queued_jobs():
+    """
+    保留中のAPI呼び出しジョブをバッチ処理する。
+    """
+    jobs = sqlite_client.get_pending_api_jobs()
+    if not jobs:
+        return
+        
+    print(f"[Queue Processor] Found {len(jobs)} pending jobs to process.")
+    for job in jobs:
+        job_id = job["id"]
+        job_type = job["job_type"]
+        params = job["params"]
+        
+        sqlite_client.update_api_job_status(job_id, "processing")
+        try:
+            if job_type == "pipeline":
+                note_id = params.get("note_id")
+                page_id = params.get("page_id")
+                skip_classification = params.get("skip_classification", False)
+                await async_pipeline_workflow(note_id, page_id, skip_classification)
+                
+            elif job_type == "feedback_learning":
+                note_id = params.get("note_id")
+                correct_folder_id = params.get("correct_folder_id")
+                reason = params.get("reason", "")
+                await update_rules_with_feedback(note_id, correct_folder_id, reason)
+                
+            elif job_type == "new_image":
+                note_id = params.get("note_id")
+                page_id = params.get("page_id")
+                image_id = params.get("image_id")
+                await process_new_image_workflow(note_id, page_id, image_id)
+                
+            elif job_type == "attachment":
+                attachment_id = params.get("attachment_id")
+                await process_attachment_ai_workflow(attachment_id)
+                
+            elif job_type == "recalculate_embedding":
+                note_id = params.get("note_id")
+                page_id = params.get("page_id")
+                await recalculate_vector_on_edit(note_id, page_id)
+                
+            sqlite_client.delete_api_job(job_id)
+            print(f"[Queue Processor] Successfully processed and deleted job {job_id} ({job_type}).")
+            
+        except ai_agent.OfflineException as offline_err:
+            print(f"[Queue Processor] System remains offline during job {job_id}: {offline_err}. Putting back to pending.")
+            sqlite_client.update_api_job_status(job_id, "pending", str(offline_err))
+            break
+        except Exception as e:
+            print(f"[Queue Processor] Job {job_id} ({job_type}) failed with error: {e}")
+            sqlite_client.update_api_job_status(job_id, "failed", str(e))
+
 

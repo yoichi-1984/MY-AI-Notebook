@@ -15,6 +15,29 @@ os.environ.pop("HTTPS_PROXY", None)
 os.environ.pop("http_proxy", None)
 os.environ.pop("https_proxy", None)
 
+
+class OfflineException(Exception):
+    """
+    ネットワーク不通やAPIエンドポイントへの接続失敗時に発生する例外。
+    """
+    pass
+
+def check_network_status() -> bool:
+    """
+    ネットワークが現在オンラインであるか（APIエンドポイントに届くか）をテストする。
+    """
+    import urllib.request
+    test_hosts = ["generativelanguage.googleapis.com", "google.com"]
+    for host in test_hosts:
+        try:
+            url = f"https://{host}"
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=2.0):
+                return True
+        except Exception:
+            continue
+    return False
+
 # AIから100%この形式のJSONで返却させる構造化スキーマ
 class NoteStructuringSchema(BaseModel):
     suggested_folder_id: str = Field(description="既存フォルダ一覧の中から、内容に最も合致するフォルダID。どれにも合致しない場合は 'unclassified' とする。")
@@ -149,6 +172,9 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
     if requested_thinking_level not in ["minimal", "low", "medium", "high"]:
         requested_thinking_level = "medium"
 
+    if has_any_credentials() and not check_network_status():
+        raise OfflineException("ネットワーク不通のため、Gemini APIへの接続に失敗しました。")
+
     print(f"[AI Agent] Generating content using model {db_model_name} with thinking_level={requested_thinking_level}")
 
     # ThinkingConfig を enum で生成
@@ -272,6 +298,8 @@ def generate_content_with_fallback(contents, response_schema=None, system_instru
 
     error_summary = " / ".join(errors)
     write_debug_log(f"All fallbacks failed. Model: {db_model_name}, Errors: {error_summary}")
+    if not check_network_status():
+        raise OfflineException("ネットワーク不通のため、Gemini APIへの接続に失敗しました。")
     raise RuntimeError(f"すべてのGemini接続フォールバックが失敗しました。詳細 -> " + error_summary)
 
 
@@ -309,6 +337,8 @@ def ocr_image_with_gemini(image_bytes: bytes) -> str:
             return response.parsed.ocr_raw_text
         raise ValueError("AI response parsing failed")
     except Exception as e:
+        if isinstance(e, OfflineException) or not check_network_status():
+            raise OfflineException("ネットワーク不通のため、Gemini OCRの実行に失敗しました。") from e
         error_msg = f"[GCP/Gemini OCRエラー] {e}"
         print(error_msg)
         return f"Mock OCR Text: [GCP/Gemini OCRエラーのためモック抽出] (エラー詳細: {e})"
@@ -346,6 +376,8 @@ def generate_summary_and_tags_with_gemini(raw_text: str, merged_ocr_text: str, e
             return response.parsed
         raise ValueError("AI response parsing failed")
     except Exception as e:
+        if isinstance(e, OfflineException) or not check_network_status():
+            raise OfflineException("ネットワーク不通のため、Gemini要約の生成に失敗しました。") from e
         error_msg = f"[GCP/Gemini 要約エラー] {e}"
         print(error_msg)
         write_debug_log(error_msg)
@@ -434,6 +466,9 @@ async def generate_embedding_via_azure(text: str, dimensions: int = 512) -> list
         vec /= np.linalg.norm(vec)
         return vec.tolist()
         
+    if not check_network_status():
+        raise OfflineException("ネットワーク不通のため、Azure Embedding APIの実行に失敗しました。")
+
     try:
         from openai import AsyncAzureOpenAI
         import httpx
@@ -455,6 +490,8 @@ async def generate_embedding_via_azure(text: str, dimensions: int = 512) -> list
             )
             return response.data[0].embedding
     except Exception as e:
+        if not check_network_status():
+            raise OfflineException("ネットワーク不通のため、Azure Embedding APIの実行に失敗しました。") from e
         error_msg = f"[Azure Embeddingエラー] {e}"
         print(error_msg)
         raise RuntimeError(error_msg) from e
@@ -507,6 +544,8 @@ def generate_rag_response(query: str, matched_notes: list[dict]) -> str:
         )
         return response.text
     except Exception as e:
+        if isinstance(e, OfflineException) or not check_network_status():
+            raise OfflineException("ネットワーク不通のため、RAG回答の生成に失敗しました。") from e
         print(f"Failed to generate RAG response: {e}. Running RAG in MOCK mode.")
         notes_summary = "\n".join(
             [f"- タイトル: {r.get('title','')}, 要約: {str(r.get('ai_summary',''))[:60]}..." for r in matched_notes]
@@ -549,6 +588,8 @@ def optimize_search_query(query: str) -> str:
             return optimized_q if optimized_q else query
         return query
     except Exception as e:
+        if isinstance(e, OfflineException) or not check_network_status():
+            raise OfflineException("ネットワーク不通のため、検索クエリの最適化に失敗しました。") from e
         print(f"[Query Optimization Error] {e}. Falling back to raw query.")
         return query
 

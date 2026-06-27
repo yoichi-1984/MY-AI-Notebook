@@ -13,6 +13,41 @@ from services import workflow, ai_agent
 
 app = FastAPI(title="AI Native Local Knowledge Database")
 
+current_network_online = True
+
+async def network_monitor_loop():
+    """
+    定期的にネットワークの疎通確認（30秒周期）を行い、
+    ステータス変化のブロードキャストおよび保留中ジョブの実行を行う。
+    """
+    global current_network_online
+    try:
+        current_network_online = ai_agent.check_network_status()
+    except Exception as e:
+        print(f"[Network Monitor] Initial check failed: {e}")
+        current_network_online = False
+    print(f"[Network Monitor] Initial status: {'online' if current_network_online else 'offline'}")
+    
+    if current_network_online:
+        asyncio.create_task(workflow.process_queued_jobs())
+
+    while True:
+        await asyncio.sleep(30.0)
+        try:
+            status = ai_agent.check_network_status()
+            if status != current_network_online:
+                current_network_online = status
+                print(f"[Network Monitor] Status changed to: {'online' if current_network_online else 'offline'}")
+                await workflow.broadcast_ws_message({
+                    "type": "network_status",
+                    "status": "online" if current_network_online else "offline"
+                })
+            
+            if current_network_online:
+                asyncio.create_task(workflow.process_queued_jobs())
+        except Exception as e:
+            print(f"[Network Monitor] Error in loop: {e}")
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 import sqlite3
@@ -61,6 +96,8 @@ async def startup_event():
         lance_client.get_table()
         # バックグラウンドマイグレーションの実行
         asyncio.create_task(workflow.migrate_existing_data_to_v2())
+        # ネットワークモニターの開始
+        asyncio.create_task(network_monitor_loop())
     except Exception as e:
         print(f"Error during DB initialization: {e}")
         config.APP_STATE = "offline"
@@ -79,6 +116,13 @@ async def get_index():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    try:
+        await websocket.send_json({
+            "type": "network_status",
+            "status": "online" if current_network_online else "offline"
+        })
+    except Exception:
+        pass
     async with workflow._ws_lock:
         workflow.active_connections.append(websocket)
     try:
@@ -711,6 +755,8 @@ def fix_folder(fix_data: FolderFix, background_tasks: BackgroundTasks):
 # 9. ハイブリッド検索 ＆ ローカルRAG
 @app.get("/api/search")
 async def search_notes(q: str, limit: Optional[int] = None):
+    if not current_network_online:
+        raise HTTPException(status_code=503, detail="ネットワーク不通のため、AI質問は一時的に利用できません。")
     if not q.strip():
         raise HTTPException(status_code=400, detail="検索クエリは空にできません。")
         
