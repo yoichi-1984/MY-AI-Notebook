@@ -510,6 +510,18 @@
                         </div>
                     </div>
 
+                    <!-- 仮置きモード用同期セクション -->
+                    <div id="syncTempDataSection" class="hidden p-5 rounded-xl border border-amber-500/30 bg-amber-500/5 text-slate-700 dark:text-slate-300 space-y-3">
+                        <div class="flex items-center space-x-2 text-amber-600 dark:text-amber-400 font-semibold text-sm">
+                            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                            <span>仮置きモードのデータを同期</span>
+                        </div>
+                        <p class="text-xs text-slate-500 dark:text-slate-400">現在、ローカルの一時的なデータベースで起動しています。正式なデータベースに再接続し、仮置き中のデータをマージします。</p>
+                        <button onclick="syncTempLocalToMain()" class="w-full px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition">
+                            正式なDBへ同期する
+                        </button>
+                    </div>
+
                     <!-- データ保存先設定セクション -->
                     <div class="p-5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 space-y-4">
                         <h3 class="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center">
@@ -562,8 +574,45 @@
         let activeViewBeforeSettings = 'dropZone'; 
 
         // 初期化処理
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
             initTheme();
+            
+            // 503エラーのグローバルインターセプト（オフライン検知）
+            const originalFetch = window.fetch;
+            window.fetch = async function(...args) {
+                const response = await originalFetch.apply(this, args);
+                if (response.status === 503 && typeof args[0] === 'string' && !args[0].includes("/api/system/status")) {
+                    const data = await response.clone().json().catch(() => ({}));
+                    if (data.detail && (data.detail.includes('オフライン') || data.detail.includes('失われました') || data.detail.includes('アクセスできません'))) {
+                        // 未保存テキストの退避
+                        if (currentNoteId && document.getElementById('noteTitle')) {
+                            localStorage.setItem('temp_unsaved_title_' + currentNoteId, document.getElementById('noteTitle').value);
+                            localStorage.setItem('temp_unsaved_content_' + currentNoteId, document.getElementById('noteContent').value);
+                        }
+                        document.getElementById('offlineModalMessage').textContent = data.detail;
+                        document.getElementById('offlineModal').classList.remove('hidden');
+                    }
+                }
+                return response;
+            };
+
+            try {
+                const statusRes = await fetch('/api/system/status');
+                if (statusRes.ok) {
+                    const statusData = await statusRes.json();
+                    if (statusData.status === 'offline') {
+                        document.getElementById('offlineModalMessage').textContent = statusData.error_msg || "ネットワークの切断、または保存先ドライブが見つからないため、データベースとの通信に失敗しました。";
+                        document.getElementById('offlineModal').classList.remove('hidden');
+                        return; // 以降の初期化をスキップ
+                    } else if (statusData.status === 'temp_local') {
+                        document.getElementById('syncTempDataSection').classList.remove('hidden');
+                        showToast("ローカル仮置きモードで起動しています", "warning");
+                    }
+                }
+            } catch (e) {
+                console.error("Status check failed", e);
+            }
+
             fetchFolders();
             fetchSettings();
             initWebSocket();
@@ -2879,6 +2928,44 @@
         function closeAttachmentAiModal() {
             document.getElementById('attachmentAiModal').classList.add('hidden');
         }
+        // オフライン・仮置きモード関連
+        async function retryConnection() {
+            // リロードして再度ステータス確認
+            window.location.reload();
+        }
+
+        async function startTempLocalMode() {
+            try {
+                const res = await window.fetch('/api/system/offline/temp_local', { method: 'POST' });
+                if (res.ok) {
+                    window.location.reload();
+                } else {
+                    const data = await res.json();
+                    alert("仮置きモードの開始に失敗しました: " + data.detail);
+                }
+            } catch (e) {
+                alert("通信エラーが発生しました");
+            }
+        }
+
+        async function syncTempLocalToMain() {
+            if (!confirm("正式なデータベースへの再接続とデータの同期（マージ）を開始しますか？\nネットワークが繋がっていることを確認してください。")) return;
+            
+            showToast("同期中...", "info");
+            try {
+                const res = await window.fetch('/api/system/offline/sync', { method: 'POST' });
+                if (res.ok) {
+                    alert("同期が完了しました。ページを再読み込みします。");
+                    window.location.reload();
+                } else {
+                    const data = await res.json();
+                    alert("同期に失敗しました: " + data.detail);
+                }
+            } catch (e) {
+                alert("通信エラーが発生しました");
+            }
+        }
+
         // 保存先パスの参照（OSダイアログ）
         async function browseStoragePath() {
             try {
@@ -3038,5 +3125,47 @@
             </div>
         </div>
     </div>
+    <!-- オフライン・DB切断エラーモーダル -->
+    <div id="offlineModal" class="fixed inset-0 z-[9999] flex items-center justify-center hidden">
+        <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-md"></div>
+        <div class="relative w-full max-w-lg p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col space-y-6">
+            <div class="flex items-start space-x-4">
+                <div class="p-3 bg-rose-500/10 text-rose-500 rounded-2xl shrink-0">
+                    <i data-lucide="database" class="w-8 h-8"></i>
+                </div>
+                <div>
+                    <h3 class="text-lg font-bold text-slate-900 dark:text-slate-100" id="offlineModalTitle">データベースにアクセスできません</h3>
+                    <p class="text-sm text-slate-600 dark:text-slate-400 mt-2" id="offlineModalMessage">
+                        ネットワークの切断、または保存先ドライブが見つからないため、データベースとの通信に失敗しました。
+                    </p>
+                </div>
+            </div>
+            
+            <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
+                <h4 class="text-xs font-bold text-amber-800 dark:text-amber-400 mb-2 flex items-center">
+                    <i data-lucide="alert-circle" class="w-4 h-4 mr-1"></i> ローカル仮置きモードについて
+                </h4>
+                <p class="text-xs text-amber-700 dark:text-amber-500">
+                    急ぎでメモを取りたい場合、一時的に「空の仮置きデータベース」を起動して作業を続けることができます。ネットワーク復旧後に、設定画面から元のデータベースへ作成したデータを合流させることが可能です。
+                </p>
+            </div>
+
+            <div class="flex flex-col space-y-3 pt-2">
+                <button onclick="retryConnection()" class="w-full py-3 px-4 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-xl transition flex justify-center items-center space-x-2 shadow-lg">
+                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                    <span>再接続を試す（ネットワークを直した場合）</span>
+                </button>
+                <button onclick="document.getElementById('offlineModal').classList.add('hidden'); openSettings();" class="w-full py-3 px-4 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-sm font-semibold rounded-xl transition flex justify-center items-center space-x-2">
+                    <i data-lucide="folder-search" class="w-4 h-4"></i>
+                    <span>設定画面を開いて保存先を変更する</span>
+                </button>
+                <button onclick="startTempLocalMode()" class="w-full py-3 px-4 bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold rounded-xl transition flex justify-center items-center space-x-2 shadow-lg">
+                    <i data-lucide="inbox" class="w-4 h-4"></i>
+                    <span>ローカル仮置きモードで起動する</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

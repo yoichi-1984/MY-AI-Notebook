@@ -78,18 +78,27 @@ IMAGE_DIR = ""
 ATTACHMENT_DIR = ""
 SQLITE_DB_PATH = ""
 LANCEDB_DIR = ""
+APP_STATE = "normal"  # "normal", "offline", "temp_local"
+OFFLINE_ERROR_MSG = ""
 
 def update_storage_paths(new_base: str):
-    global STORAGE_BASE, IMAGE_DIR, ATTACHMENT_DIR, SQLITE_DB_PATH, LANCEDB_DIR
+    global STORAGE_BASE, IMAGE_DIR, ATTACHMENT_DIR, SQLITE_DB_PATH, LANCEDB_DIR, APP_STATE, OFFLINE_ERROR_MSG
     STORAGE_BASE = new_base
     IMAGE_DIR = os.path.join(STORAGE_BASE, "local_images")
     ATTACHMENT_DIR = os.path.join(STORAGE_BASE, "local_attachments")
     SQLITE_DB_PATH = os.path.join(STORAGE_BASE, "local_knowledge.db")
     LANCEDB_DIR = os.path.join(STORAGE_BASE, "lancedb_data")
     
-    os.makedirs(IMAGE_DIR, exist_ok=True)
-    os.makedirs(ATTACHMENT_DIR, exist_ok=True)
-    os.makedirs(LANCEDB_DIR, exist_ok=True)
+    try:
+        os.makedirs(IMAGE_DIR, exist_ok=True)
+        os.makedirs(ATTACHMENT_DIR, exist_ok=True)
+        os.makedirs(LANCEDB_DIR, exist_ok=True)
+        APP_STATE = "normal"
+        OFFLINE_ERROR_MSG = ""
+    except Exception as e:
+        print(f"Error accessing storage path {STORAGE_BASE}: {e}")
+        APP_STATE = "offline"
+        OFFLINE_ERROR_MSG = str(e)
 
 # 初回ロード
 update_storage_paths(STORAGE_BASE)

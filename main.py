@@ -13,6 +13,29 @@ from services import workflow, ai_agent
 
 app = FastAPI(title="AI Native Local Knowledge Database")
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import sqlite3
+
+@app.middleware("http")
+async def offline_mode_middleware(request: Request, call_next):
+    if request.url.path.startswith("/api/system") or request.url.path.startswith("/static") or request.url.path.startswith("/api/settings"):
+        pass # allow
+    elif config.APP_STATE == "offline":
+        return JSONResponse(status_code=503, content={"detail": "データベースがオフラインです。再接続するかローカル仮置きモードに切り替えてください。"})
+        
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        err_str = str(e).lower()
+        if (isinstance(e, sqlite3.OperationalError) and ("disk i/o error" in err_str or "database is locked" in err_str)) or \
+           (isinstance(e, OSError) and ("network" in err_str or "no such file" in err_str or "unreachable" in err_str)):
+            config.APP_STATE = "offline"
+            config.OFFLINE_ERROR_MSG = str(e)
+            return JSONResponse(status_code=503, content={"detail": f"データベースとの接続が失われました: {e}"})
+        raise e
+
 # 画像の静的ファイルサーブ用
 os.makedirs(config.IMAGE_DIR, exist_ok=True)
 @app.get("/local_images/{file_path:path}")
@@ -27,12 +50,21 @@ import asyncio
 
 @app.on_event("startup")
 async def startup_event():
-    # SQLite データベースの作成と初期フォルダのインサート
-    sqlite_client.init_db()
-    # LanceDB テーブルの作成
-    lance_client.get_table()
-    # バックグラウンドマイグレーションの実行
-    asyncio.create_task(workflow.migrate_existing_data_to_v2())
+    if config.APP_STATE == "offline":
+        print(f"Application starting in OFFLINE mode. Skipping DB init. Error: {config.OFFLINE_ERROR_MSG}")
+        return
+
+    try:
+        # SQLite データベースの作成と初期フォルダのインサート
+        sqlite_client.init_db()
+        # LanceDB テーブルの作成
+        lance_client.get_table()
+        # バックグラウンドマイグレーションの実行
+        asyncio.create_task(workflow.migrate_existing_data_to_v2())
+    except Exception as e:
+        print(f"Error during DB initialization: {e}")
+        config.APP_STATE = "offline"
+        config.OFFLINE_ERROR_MSG = str(e)
 
 # トップページ (index.html) を直接サーブ
 @app.get("/", response_class=HTMLResponse)
@@ -789,6 +821,14 @@ def update_settings(data: SettingsUpdate):
         sqlite_client.set_setting(k, str(v))
     return {"status": "success", "message": "設定を更新しました。"}
 
+@app.get("/api/system/status")
+def system_status():
+    return {
+        "status": config.APP_STATE,
+        "error_msg": config.OFFLINE_ERROR_MSG,
+        "storage_base": config.STORAGE_BASE
+    }
+
 @app.get("/api/system/select_directory")
 def select_directory():
     import tkinter as tk
@@ -892,6 +932,99 @@ def apply_storage_path(request: StorageApplyRequest):
         raise HTTPException(status_code=500, detail=f"保存先の変更中にエラーが発生しました: {e}")
         
     return {"status": "success", "new_path": new_path}
+
+@app.post("/api/system/offline/temp_local")
+def switch_to_temp_local():
+    temp_dir = os.path.join(config.BASE_DIR, "temp_offline_db")
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    config.update_storage_paths(temp_dir)
+    config.APP_STATE = "temp_local"
+    
+    lance_client.reset_connection()
+    sqlite_client.init_db()
+    lance_client.get_table()
+    
+    return {"status": "success", "new_path": temp_dir}
+
+@app.post("/api/system/offline/sync")
+def sync_temp_local_to_main():
+    if config.APP_STATE != "temp_local":
+        raise HTTPException(status_code=400, detail="仮置きモードではありません。")
+        
+    import json
+    import shutil
+    try:
+        with open(config.STORAGE_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            main_base = data.get("storage_base", config.BASE_DIR)
+    except:
+        main_base = config.BASE_DIR
+        
+    if not os.path.exists(main_base):
+        raise HTTPException(status_code=503, detail="正式なデータベースのパスにまだアクセスできません。接続を確認してください。")
+        
+    temp_base = config.STORAGE_BASE
+    
+    # 1. 物理ファイルのコピー
+    for folder in ["local_images", "local_attachments"]:
+        src = os.path.join(temp_base, folder)
+        dst = os.path.join(main_base, folder)
+        if os.path.exists(src):
+            os.makedirs(dst, exist_ok=True)
+            for file in os.listdir(src):
+                shutil.copy2(os.path.join(src, file), os.path.join(dst, file))
+                
+    # 2. メインDBに切り替え
+    config.update_storage_paths(main_base)
+    lance_client.reset_connection()
+    
+    # 3. SQLiteデータのマージ
+    conn = sqlite_client.get_connection()
+    temp_db_path = os.path.join(temp_base, "local_knowledge.db")
+    try:
+        conn.execute("ATTACH DATABASE ? AS tempdb", (temp_db_path,))
+        conn.execute("INSERT OR IGNORE INTO folders SELECT * FROM tempdb.folders")
+        conn.execute("INSERT OR REPLACE INTO notes SELECT * FROM tempdb.notes")
+        conn.execute("INSERT OR REPLACE INTO note_pages SELECT * FROM tempdb.note_pages")
+        conn.execute("INSERT OR REPLACE INTO note_images SELECT * FROM tempdb.note_images")
+        conn.execute("INSERT OR REPLACE INTO note_attachments SELECT * FROM tempdb.note_attachments")
+        conn.commit()
+    except Exception as e:
+        conn.execute("DETACH DATABASE tempdb")
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"SQLiteマージエラー: {e}")
+    finally:
+        try:
+            conn.execute("DETACH DATABASE tempdb")
+        except:
+            pass
+        conn.close()
+        
+    # 4. LanceDBデータのマージ
+    temp_lance_dir = os.path.join(temp_base, "lancedb_data")
+    if os.path.exists(temp_lance_dir):
+        import lancedb
+        temp_db = lancedb.connect(temp_lance_dir)
+        if lance_client.TABLE_NAME in temp_db.table_names():
+            temp_table = temp_db.open_table(lance_client.TABLE_NAME)
+            data_to_insert = temp_table.to_pandas()
+            if not data_to_insert.empty:
+                main_table = lance_client.get_table()
+                # スキーマv5 (512d) で一致している前提
+                try:
+                    main_table.add(data_to_insert)
+                except Exception as e:
+                    print(f"LanceDB Merge Error: {e}")
+                    
+    # 5. クリーンアップ
+    try:
+        shutil.rmtree(temp_base, ignore_errors=True)
+    except:
+        pass
+        
+    config.APP_STATE = "normal"
+    return {"status": "success"}
 
 @app.get("/api/settings/storage/current")
 def get_current_storage():
