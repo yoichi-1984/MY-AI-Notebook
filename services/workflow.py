@@ -273,6 +273,8 @@ async def update_rules_with_feedback(note_id: str, correct_folder_id: str, reaso
                 new_rules = response.text
             except Exception as e:
                 print(f"Failed to generate feedback rules: {e}. Falling back to MOCK mode rule entry.")
+                if isinstance(e, ai_agent.OfflineException):
+                    raise e
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 new_rule_entry = f"\n- [{timestamp}] 「{note.get('title', '無題')}」を「{old_folder_name}」から「{correct_folder_name}」へ手動移動。理由: {reason or '指示なし'}\n"
                 new_rules = rules_str + new_rule_entry
@@ -568,18 +570,33 @@ async def recalculate_on_image_delete(note_id: str, page_id: str):
 
     except Exception as e:
         print(f"Error in recalculate_on_image_delete: {e}")
-        try:
-            sqlite_client.update_note_status(note_id, "completed")
-            await broadcast_ws_message({
-                "type": "completed",
-                "note_id": note_id,
-                "page_id": page_id,
-                "title": "解析エラー",
-                "folder_id": note["parent_folder_id"] if note else "inbox",
-                "error": str(e)
-            })
-        except Exception as inner_e:
-            print(f"Failed to handle error callback: {inner_e}")
+        if isinstance(e, ai_agent.OfflineException):
+            sqlite_client.update_note_status(note_id, "offline_queued")
+            sqlite_client.add_api_job("recalculate_on_image_delete", {"note_id": note_id, "page_id": page_id})
+            try:
+                await broadcast_ws_message({
+                    "type": "offline_queued",
+                    "note_id": note_id,
+                    "page_id": page_id,
+                    "title": "オフライン処理待ちのノート",
+                    "folder_id": note["parent_folder_id"] if note else "inbox",
+                    "message": "オフラインのため、接続復帰後に画像削除に伴う再解析を自動処理します。"
+                })
+            except Exception as inner_e:
+                print(f"Failed to handle offline callback: {inner_e}")
+        else:
+            try:
+                sqlite_client.update_note_status(note_id, "completed")
+                await broadcast_ws_message({
+                    "type": "completed",
+                    "note_id": note_id,
+                    "page_id": page_id,
+                    "title": "解析エラー",
+                    "folder_id": note["parent_folder_id"] if note else "inbox",
+                    "error": str(e)
+                })
+            except Exception as inner_e:
+                print(f"Failed to handle error callback: {inner_e}")
 
 async def recalculate_vector_on_edit(note_id: str, page_id: str):
     """
@@ -843,23 +860,42 @@ async def process_document_import_workflow(note_id: str, file_path: str, filenam
 
     except Exception as e:
         print(f"Error in process_document_import_workflow: {e}")
-        try:
-            sqlite_client.update_note_status(note_id, "failed")
-            await broadcast_ws_message({
-                "type": "failed",
-                "note_id": note_id,
-                "title": filename,
-                "error": str(e)
-            })
-        except Exception as inner_e:
-            print(f"Failed to handle error callback: {inner_e}")
+        if isinstance(e, ai_agent.OfflineException):
+            sqlite_client.update_note_status(note_id, "offline_queued")
+            sqlite_client.add_api_job("document_import", {"note_id": note_id, "file_path": file_path, "filename": filename})
+            try:
+                await broadcast_ws_message({
+                    "type": "offline_queued",
+                    "note_id": note_id,
+                    "page_id": None,
+                    "title": "オフライン処理待ちのノート",
+                    "folder_id": note["parent_folder_id"] if note else "inbox",
+                    "message": "オフラインのため、接続復帰後にドキュメントのインポート解析を自動処理します。"
+                })
+            except Exception as inner_e:
+                print(f"Failed to handle offline callback: {inner_e}")
+        else:
+            try:
+                sqlite_client.update_note_status(note_id, "failed")
+                await broadcast_ws_message({
+                    "type": "failed",
+                    "note_id": note_id,
+                    "title": filename,
+                    "error": str(e)
+                })
+            except Exception as inner_e:
+                print(f"Failed to handle error callback: {inner_e}")
     finally:
         # 一時ファイルの削除
-        if os.path.exists(file_path):
-            try:
+        # オフラインでキューイングされた場合は、復帰時の再処理のためにファイルを残しておく必要がある
+        # ノートのステータスを確認し、'offline_queued' でない場合のみ削除する
+        try:
+            note = sqlite_client.get_note(note_id)
+            status = note.get("status") if note else None
+            if status != "offline_queued" and os.path.exists(file_path):
                 os.remove(file_path)
-            except Exception as e:
-                print(f"Failed to remove temp file {file_path}: {e}")
+        except Exception as e:
+            print(f"Failed to check status or remove temp file {file_path}: {e}")
 
 async def process_attachment_ai_workflow(attachment_id: str):
     """
@@ -941,6 +977,8 @@ async def process_attachment_ai_workflow(attachment_id: str):
                 ai_summary = summary_response.text.strip()
             except Exception as se:
                 print(f"[Warning] 添付ファイルのAI要約生成に失敗しました: {se}")
+                if isinstance(se, ai_agent.OfflineException):
+                    raise se
                 ai_summary = "ファイルのテキスト抽出は完了しましたが、AI要約の生成に失敗しました。"
         else:
             ai_summary = "ファイルから解析可能なテキスト情報が見つかりませんでした。"
@@ -973,6 +1011,8 @@ async def process_attachment_ai_workflow(attachment_id: str):
                 )
             except Exception as ve:
                 print(f"[Warning] 添付ファイルのベクトル登録に失敗しました: {ve}")
+                if isinstance(ve, ai_agent.OfflineException):
+                    raise ve
 
         # 7. ノートステータスを完了に戻し、WebSocketで通知
         sqlite_client.update_note_status(note_id, "completed")
@@ -1143,6 +1183,17 @@ async def process_queued_jobs():
                 note_id = params.get("note_id")
                 page_id = params.get("page_id")
                 await recalculate_vector_on_edit(note_id, page_id)
+                
+            elif job_type == "recalculate_on_image_delete":
+                note_id = params.get("note_id")
+                page_id = params.get("page_id")
+                await recalculate_on_image_delete(note_id, page_id)
+                
+            elif job_type == "document_import":
+                note_id = params.get("note_id")
+                file_path = params.get("file_path")
+                filename = params.get("filename")
+                await process_document_import_workflow(note_id, file_path, filename)
                 
             sqlite_client.delete_api_job(job_id)
             print(f"[Queue Processor] Successfully processed and deleted job {job_id} ({job_type}).")
