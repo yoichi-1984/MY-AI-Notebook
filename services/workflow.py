@@ -715,6 +715,10 @@ async def process_document_import_workflow(note_id: str, file_path: str, filenam
                     if ocr_text:
                         sqlite_client.update_note_image_ocr(img_id, ocr_text)
                         merged_ocr_all.append(ocr_text)
+                        
+                        # 文字化けやスキャンPDFの場合、抽出されたOCRテキストを本文(raw_text)にフォールバック設定する
+                        if not raw_text.strip():
+                            raw_text = ocr_text
 
             # テキストまたはOCRテキストがある場合にAI解析
             ai_summary = ""

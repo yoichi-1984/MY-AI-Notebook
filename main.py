@@ -184,7 +184,18 @@ async def import_note(
     # 1. 拡張子の確認
     filename = file.filename
     ext = os.path.splitext(filename)[1].lower()
-    supported_exts = ['.pdf', '.pptx', '.ppt', '.docx', '.xlsx', '.xlsm', '.xls', '.txt', '.md']
+    supported_exts = [
+        # ドキュメント
+        '.pdf', '.docx', '.doc', '.docm', '.dotx', '.dot', '.rtf',
+        '.pptx', '.ppt', '.pptm', '.potx', '.ppsx', '.pps',
+        '.xlsx', '.xlsm', '.xls',
+        # テキスト・プログラムファイル
+        '.txt', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', 
+        '.json', '.yaml', '.yml', '.sh', '.bat', '.ps1', '.sql', '.ini', 
+        '.env', '.csv', '.xml', '.toml', '.log', '.rst', '.conf', '.properties',
+        '.c', '.cpp', '.h', '.hpp', '.cs', '.java', '.go', '.rs', '.rb', '.php',
+        '.pl', '.swift', '.kt', '.scala'
+    ]
     if ext not in supported_exts:
         raise HTTPException(
             status_code=400,

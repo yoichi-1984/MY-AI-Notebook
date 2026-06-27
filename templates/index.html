@@ -169,7 +169,7 @@
                     <button id="importNoteBtn" onclick="triggerImportFile()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-505 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 rounded transition hidden" title="ドキュメントインポート">
                         <i data-lucide="upload" class="w-4 h-4"></i>
                     </button>
-                    <input type="file" id="importFileInput" onchange="handleImportFileSelect(event)" accept=".pdf,.pptx,.ppt,.docx,.xlsx,.xlsm,.xls,.txt,.md" style="display: none;">
+                    <input type="file" id="importFileInput" onchange="handleImportFileSelect(event)" accept=".pdf,.docx,.doc,.docm,.dotx,.dot,.rtf,.pptx,.ppt,.pptm,.potx,.ppsx,.pps,.xlsx,.xlsm,.xls,.txt,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.json,.yaml,.yml,.sh,.bat,.ps1,.sql,.ini,.env,.csv,.xml,.toml,.log,.rst,.conf,.properties,.c,.cpp,.h,.hpp,.cs,.java,.go,.rs,.rb,.php,.pl,.swift,.kt,.scala" style="display: none;">
                 </div>
                 <span id="noteCount" class="text-xs text-slate-550 dark:text-slate-500 font-mono">0 件</span>
             </div>
@@ -323,7 +323,7 @@
                             </div>
 
                             <!-- 隠しファイルインプット -->
-                            <input type="file" id="attachmentFileInput" accept=".pdf,.pptx,.ppt,.docx,.xlsx,.xlsm,.xls,.txt,.md" class="hidden" onchange="handleAttachmentFileSelect(event)">
+                            <input type="file" id="attachmentFileInput" accept=".pdf,.docx,.doc,.docm,.dotx,.dot,.rtf,.pptx,.ppt,.pptm,.potx,.ppsx,.pps,.xlsx,.xlsm,.xls,.txt,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.json,.yaml,.yml,.sh,.bat,.ps1,.sql,.ini,.env,.csv,.xml,.toml,.log,.rst,.conf,.properties,.c,.cpp,.h,.hpp,.cs,.java,.go,.rs,.rb,.php,.pl,.swift,.kt,.scala" class="hidden" onchange="handleAttachmentFileSelect(event)">
                         </div>
 
                         <!-- 生テキスト (エディタ) -->
@@ -2694,7 +2694,16 @@
                 return;
             }
 
-            const allowedExts = ['.pdf', '.pptx', '.ppt', '.docx', '.xlsx', '.xlsm', '.xls', '.txt', '.md'];
+            const allowedExts = [
+                '.pdf', '.docx', '.doc', '.docm', '.dotx', '.dot', '.rtf',
+                '.pptx', '.ppt', '.pptm', '.potx', '.ppsx', '.pps',
+                '.xlsx', '.xlsm', '.xls',
+                '.txt', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', 
+                '.json', '.yaml', '.yml', '.sh', '.bat', '.ps1', '.sql', '.ini', 
+                '.env', '.csv', '.xml', '.toml', '.log', '.rst', '.conf', '.properties',
+                '.c', '.cpp', '.h', '.hpp', '.cs', '.java', '.go', '.rs', '.rb', '.php',
+                '.pl', '.swift', '.kt', '.scala'
+            ];
             const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
             if (!allowedExts.includes(fileExt)) {
                 showToast("対応していないファイル形式です。(" + allowedExts.join(', ') + ")", "error");

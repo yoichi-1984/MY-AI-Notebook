@@ -54,19 +54,200 @@ class DocumentParser:
     """PDF, PPTX, DOCX, XLSX, TXTドキュメントからテキストと画像をページ単位で抽出するパーサクラス"""
 
     @classmethod
+    def _is_garbled(cls, text: str) -> bool:
+        if not text:
+            return False
+        import unicodedata
+        import re
+        
+        # 制御文字の割合 (改行やタブは除く)
+        control_chars = sum(1 for c in text if unicodedata.category(c).startswith('C') and c not in ('\n', '\r', '\t'))
+        if len(text) > 0 and (control_chars / len(text)) > 0.05:
+            return True
+            
+        # 有効な日本語/英語文字の割合
+        valid_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u0020-\u007E\uFF00-\uFFEF\u3000-\u303F]+')
+        valid_chars = sum(len(m.group(0)) for m in valid_pattern.finditer(text))
+        
+        if len(text) > 0 and (valid_chars / len(text)) < 0.5:
+            return True
+            
+        return False
+
+    @classmethod
+    def _convert_to_docx_win32(cls, file_bytes: bytes, filename: str) -> bytes:
+        """win32comを利用して.doc/.rtfなどを.docxに変換する"""
+        if not HAS_WIN32:
+            raise ImportError("Windows環境およびwin32comライブラリが必要です。")
+            
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, filename)
+            output_filename = os.path.splitext(filename)[0] + ".docx"
+            output_path = os.path.join(temp_dir, output_filename)
+            
+            with open(input_path, "wb") as f:
+                f.write(file_bytes)
+                
+            word_app = None
+            doc = None
+            try:
+                pythoncom.CoInitialize()
+                word_app = win32com.client.Dispatch("Word.Application")
+                word_app.Visible = False
+                doc = word_app.Documents.Open(os.path.abspath(input_path))
+                # 16 = wdFormatXMLDocument (.docx)
+                doc.SaveAs2(os.path.abspath(output_path), FileFormat=16)
+                doc.Close()
+                
+                with open(output_path, "rb") as f:
+                    return f.read()
+            finally:
+                if word_app:
+                    try:
+                        word_app.Quit()
+                    except Exception:
+                        pass
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
+
+    @classmethod
+    def _convert_to_pptx_win32(cls, file_bytes: bytes, filename: str) -> bytes:
+        """win32comを利用して.ppt/.pptmなどを.pptxに変換する"""
+        if not HAS_WIN32:
+            raise ImportError("Windows環境およびwin32comライブラリが必要です。")
+            
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, filename)
+            output_filename = os.path.splitext(filename)[0] + ".pptx"
+            output_path = os.path.join(temp_dir, output_filename)
+            
+            with open(input_path, "wb") as f:
+                f.write(file_bytes)
+                
+            ppt_app = None
+            presentation = None
+            try:
+                pythoncom.CoInitialize()
+                ppt_app = win32com.client.Dispatch("PowerPoint.Application")
+                # 24 = ppSaveAsOpenXMLPresentation (.pptx)
+                presentation = ppt_app.Presentations.Open(
+                    os.path.abspath(input_path),
+                    ReadOnly=True,
+                    WithWindow=False
+                )
+                presentation.SaveAs(os.path.abspath(output_path), 24)
+                presentation.Close()
+                
+                with open(output_path, "rb") as f:
+                    return f.read()
+            finally:
+                if ppt_app:
+                    try:
+                        ppt_app.Quit()
+                    except Exception:
+                        pass
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
+
+    @classmethod
+    def _convert_to_xlsx_win32(cls, file_bytes: bytes, filename: str) -> bytes:
+        """win32comを利用して.xlsを.xlsxに変換する"""
+        if not HAS_WIN32:
+            raise ImportError("Windows環境およびwin32comライブラリが必要です。")
+            
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, filename)
+            output_filename = os.path.splitext(filename)[0] + ".xlsx"
+            output_path = os.path.join(temp_dir, output_filename)
+            
+            with open(input_path, "wb") as f:
+                f.write(file_bytes)
+                
+            excel_app = None
+            workbook = None
+            try:
+                pythoncom.CoInitialize()
+                excel_app = win32com.client.Dispatch("Excel.Application")
+                excel_app.Visible = False
+                excel_app.DisplayAlerts = False
+                workbook = excel_app.Workbooks.Open(os.path.abspath(input_path))
+                # 51 = xlOpenXMLWorkbook (.xlsx)
+                workbook.SaveAs(os.path.abspath(output_path), FileFormat=51)
+                workbook.Close()
+                
+                with open(output_path, "rb") as f:
+                    return f.read()
+            finally:
+                if excel_app:
+                    try:
+                        excel_app.Quit()
+                    except Exception:
+                        pass
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
+
+    @classmethod
     def parse(cls, file_bytes: bytes, filename: str) -> List[Dict[str, Any]]:
         """ファイル名から拡張子を判別し、適切なパース処理を実行する"""
         ext = os.path.splitext(filename)[1].lower()
         
+        # Word関連の拡張子
+        word_exts = ['.docx', '.doc', '.docm', '.dotx', '.dot', '.rtf']
+        # PowerPoint関連の拡張子
+        ppt_exts = ['.pptx', '.ppt', '.pptm', '.potx', '.ppsx', '.pps']
+        # Excel関連の拡張子
+        excel_exts = ['.xlsx', '.xlsm', '.xls']
+        # テキスト・プログラムファイル
+        text_exts = [
+            '.txt', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', 
+            '.json', '.yaml', '.yml', '.sh', '.bat', '.ps1', '.sql', '.ini', 
+            '.env', '.csv', '.xml', '.toml', '.log', '.rst', '.conf', '.properties',
+            '.c', '.cpp', '.h', '.hpp', '.cs', '.java', '.go', '.rs', '.rb', '.php',
+            '.pl', '.swift', '.kt', '.scala'
+        ]
+
         if ext == '.pdf':
             return cls.parse_pdf(file_bytes, filename)
-        elif ext in ['.pptx', '.ppt']:
+        elif ext in ppt_exts:
+            if ext != '.pptx':
+                if HAS_WIN32:
+                    try:
+                        file_bytes = cls._convert_to_pptx_win32(file_bytes, filename)
+                        filename = os.path.splitext(filename)[0] + ".pptx"
+                    except Exception as e:
+                        print(f"[Warning] PowerPoint COMでの変換に失敗しました: {e}")
+                else:
+                    raise ValueError(f"Windows環境以外では {ext} はサポートされていません。")
             return cls.parse_pptx(file_bytes, filename)
-        elif ext == '.docx':
+        elif ext in word_exts:
+            if ext != '.docx':
+                if HAS_WIN32:
+                    try:
+                        file_bytes = cls._convert_to_docx_win32(file_bytes, filename)
+                        filename = os.path.splitext(filename)[0] + ".docx"
+                    except Exception as e:
+                        print(f"[Warning] Word COMでの変換に失敗しました: {e}")
+                else:
+                    raise ValueError(f"Windows環境以外では {ext} はサポートされていません。")
             return cls.parse_docx(file_bytes)
-        elif ext in ['.xlsx', '.xlsm', '.xls']:
+        elif ext in excel_exts:
+            if ext == '.xls':
+                if HAS_WIN32:
+                    try:
+                        file_bytes = cls._convert_to_xlsx_win32(file_bytes, filename)
+                        filename = os.path.splitext(filename)[0] + ".xlsx"
+                    except Exception as e:
+                        print(f"[Warning] Excel COMでの変換に失敗しました: {e}")
+                else:
+                    pass
             return cls.parse_xlsx(file_bytes, filename)
-        elif ext in ['.txt', '.md']:
+        elif ext in text_exts:
             return cls.parse_text(file_bytes, filename)
         else:
             raise ValueError(f"未サポートのファイル形式です: {ext}")
@@ -96,7 +277,12 @@ class DocumentParser:
             # テキスト抽出
             text = ""
             try:
-                text = reader.pages[i].extract_text() or ""
+                extracted = reader.pages[i].extract_text() or ""
+                if cls._is_garbled(extracted):
+                    print(f"[Warning] ページ {i+1} の抽出テキストが文字化けしているため破棄します。")
+                    text = ""
+                else:
+                    text = extracted
             except Exception as e:
                 print(f"[Warning] pypdfでのテキスト抽出に失敗しました (ページ {i+1}): {e}")
 
