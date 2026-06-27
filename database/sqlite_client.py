@@ -1,11 +1,11 @@
 import sqlite3
 import datetime
 import uuid
-from config import SQLITE_DB_PATH
+import config
 
 def get_connection():
     # ロック競合を防ぐために十分なタイムアウトを設定
-    conn = sqlite3.connect(SQLITE_DB_PATH, timeout=30.0)
+    conn = sqlite3.connect(config.SQLITE_DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -551,7 +551,7 @@ def update_page_metadata(page_id: str, page_name: str, raw_text: str, reference_
         conn.commit()
     return note_id
 
-def delete_page(page_id: str) -> tuple[str, list[str]]:
+def delete_page(page_id: str) -> tuple[str, list[str], list[dict]]:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT note_id FROM note_pages WHERE id = ?", (page_id,))
@@ -562,7 +562,12 @@ def delete_page(page_id: str) -> tuple[str, list[str]]:
         cursor.execute("SELECT image_path FROM note_images WHERE page_id = ?", (page_id,))
         image_paths = [r["image_path"] for r in cursor.fetchall() if r["image_path"]]
         
+        # 紐づく添付ファイルの取得
+        cursor.execute("SELECT id, file_path FROM note_attachments WHERE page_id = ?", (page_id,))
+        attachments = [{"id": r["id"], "file_path": r["file_path"]} for r in cursor.fetchall()]
+        
         cursor.execute("DELETE FROM note_images WHERE page_id = ?", (page_id,))
+        cursor.execute("DELETE FROM note_attachments WHERE page_id = ?", (page_id,))
         cursor.execute("DELETE FROM tasks WHERE page_id = ?", (page_id,))
         cursor.execute("DELETE FROM note_pages WHERE id = ?", (page_id,))
         
@@ -570,7 +575,7 @@ def delete_page(page_id: str) -> tuple[str, list[str]]:
             now = datetime.datetime.now().isoformat()
             cursor.execute("UPDATE notes SET updated_at = ? WHERE id = ?", (now, note_id))
         conn.commit()
-    return note_id, image_paths
+    return note_id, image_paths, attachments
 
 def reorder_pages(note_id: str, page_ids: list[str]) -> None:
     now = datetime.datetime.now().isoformat()
@@ -633,7 +638,7 @@ def get_note(note_id: str):
             cursor.execute("SELECT id, description, due_date, is_completed FROM tasks WHERE page_id = ?", (p_dict["id"],))
             p_dict["tasks"] = [dict(t_row) for t_row in cursor.fetchall()]
             # ページごとの添付ファイルを取得
-            cursor.execute("SELECT id, file_path, file_name, file_size, mime_type, created_at, ai_summary FROM note_attachments WHERE page_id = ? ORDER BY created_at ASC", (p_dict["id"],))
+            cursor.execute("SELECT id, file_path, file_name, file_size, mime_type, created_at, ai_summary, ai_ocr_text FROM note_attachments WHERE page_id = ? ORDER BY created_at ASC", (p_dict["id"],))
             p_dict["attachments"] = [dict(a_row) for a_row in cursor.fetchall()]
             pages.append(p_dict)
             

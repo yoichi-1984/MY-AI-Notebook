@@ -857,7 +857,7 @@ async def process_attachment_ai_workflow(attachment_id: str):
             print(f"Error: Parent note {note_id} not found.")
             return
 
-        physical_path = os.path.abspath(os.path.join(config.BASE_DIR, attachment["file_path"]))
+        physical_path = os.path.abspath(os.path.join(config.STORAGE_BASE, attachment["file_path"]))
         if not os.path.exists(physical_path):
             raise FileNotFoundError(f"添付ファイルの物理ファイルが見つかりません: {physical_path}")
 

@@ -510,6 +510,27 @@
                         </div>
                     </div>
 
+                    <!-- データ保存先設定セクション -->
+                    <div class="p-5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 space-y-4">
+                        <h3 class="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center">
+                            <i data-lucide="database" class="w-4 h-4 mr-1.5 text-brand-600 dark:text-brand-400"></i> データ保存先設定
+                        </h3>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                            データベースや画像ファイルの保存先ディレクトリ（絶対パス）を指定します。
+                        </p>
+                        
+                        <div class="flex gap-2">
+                            <input type="text" id="settingStoragePath" placeholder="例: D:/my-note-data" 
+                                   class="flex-1 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm px-3 py-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-brand-500">
+                            <button onclick="browseStoragePath()" class="px-3 py-2 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 text-sm font-semibold rounded-lg transition-colors whitespace-nowrap">
+                                <i data-lucide="folder-search" class="w-4 h-4 inline-block mr-1"></i>参照...
+                            </button>
+                            <button onclick="checkAndApplyStoragePath()" class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-md whitespace-nowrap">
+                                変更を適用
+                            </button>
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </main>
@@ -2857,6 +2878,88 @@
 
         function closeAttachmentAiModal() {
             document.getElementById('attachmentAiModal').classList.add('hidden');
+        }
+        // 保存先パスの参照（OSダイアログ）
+        async function browseStoragePath() {
+            try {
+                const res = await fetch('/api/system/select_directory');
+                const data = await res.json();
+                if (data.path) {
+                    document.getElementById('settingStoragePath').value = data.path;
+                } else if (data.error) {
+                    showToast("フォルダの選択に失敗しました: " + data.error, "error");
+                }
+            } catch (e) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        // データ保存先の変更処理
+        async function checkAndApplyStoragePath() {
+            const newPath = document.getElementById('settingStoragePath').value.trim();
+            const originalPath = document.getElementById('settingStoragePath').dataset.originalPath;
+            if (!newPath) {
+                showToast("保存先パスを入力してください", "error");
+                return;
+            }
+            if (newPath === originalPath) {
+                showToast("保存先パスは変更されていません", "info");
+                return;
+            }
+            
+            try {
+                const checkRes = await fetch('/api/settings/storage/check', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({new_path: newPath})
+                });
+                const checkData = await checkRes.json();
+                
+                if (!checkData.is_valid) {
+                    showToast(checkData.error || "無効なパスです", "error");
+                    return;
+                }
+                
+                let action = "";
+                if (checkData.has_data) {
+                    if (confirm(`指定されたパスには既にデータベースが存在します。\nこのデータベースを使用しますか？\n\nパス: ${newPath}`)) {
+                        action = "use_existing";
+                    } else {
+                        return;
+                    }
+                } else {
+                    if (confirm(`指定されたパスは空です。\n現在のデータを新しい場所に「移動」しますか？\n\n[OK]: データを移動する\n[キャンセル]: 新規作成または中断`)) {
+                        action = "move";
+                    } else {
+                        if (confirm(`空のデータベースを新しく作成してよろしいですか？\n\n[OK]: 新規作成する\n[キャンセル]: 変更をやめる`)) {
+                            action = "create_new";
+                        } else {
+                            return;
+                        }
+                    }
+                }
+                
+                showToast("保存先を変更中です...（データ移動中は時間がかかる場合があります）", "info");
+                const applyRes = await fetch('/api/settings/storage/apply', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({new_path: newPath, action: action})
+                });
+                
+                if (!applyRes.ok) {
+                    const errorData = await applyRes.json();
+                    showToast(errorData.detail || "変更に失敗しました", "error");
+                    return;
+                }
+                
+                showToast("保存先の設定を適用しました！アプリをリロードします...", "success");
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+                
+            } catch(e) {
+                showToast("通信エラーが発生しました", "error");
+            }
         }
     </script>
 

@@ -15,7 +15,13 @@ app = FastAPI(title="AI Native Local Knowledge Database")
 
 # 画像の静的ファイルサーブ用
 os.makedirs(config.IMAGE_DIR, exist_ok=True)
-app.mount("/local_images", StaticFiles(directory=config.IMAGE_DIR), name="local_images")
+@app.get("/local_images/{file_path:path}")
+async def get_local_image(file_path: str):
+    from fastapi.responses import FileResponse
+    full_path = os.path.abspath(os.path.join(config.IMAGE_DIR, file_path))
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="画像が見つかりません。")
+    return FileResponse(full_path)
 
 import asyncio
 
@@ -220,7 +226,7 @@ def delete_folder(folder_id: str, delete_notes: bool = False):
             image_paths = sqlite_client.delete_note(note_id)
             for img_path in image_paths:
                 if img_path:
-                    image_physical_path = os.path.join(config.BASE_DIR, img_path)
+                    image_physical_path = os.path.join(config.STORAGE_BASE, img_path)
                     if os.path.exists(image_physical_path):
                         try:
                             os.remove(image_physical_path)
@@ -259,7 +265,7 @@ def delete_note(note_id: str):
     # 複数画像の物理削除
     for img_path in image_paths:
         if img_path:
-            image_physical_path = os.path.join(config.BASE_DIR, img_path)
+            image_physical_path = os.path.join(config.STORAGE_BASE, img_path)
             if os.path.exists(image_physical_path):
                 try:
                     os.remove(image_physical_path)
@@ -404,7 +410,7 @@ def download_attachment(attachment_id: str):
     if not attachment:
         raise HTTPException(status_code=404, detail="添付ファイルが見つかりません。")
         
-    physical_path = os.path.abspath(os.path.join(config.BASE_DIR, attachment["file_path"]))
+    physical_path = os.path.abspath(os.path.join(config.STORAGE_BASE, attachment["file_path"]))
     if not os.path.exists(physical_path):
         raise HTTPException(status_code=404, detail="物理ファイルが存在しません。")
         
@@ -429,7 +435,7 @@ async def delete_attachment(attachment_id: str, background_tasks: BackgroundTask
     
     # 物理ファイル削除
     if file_path:
-        physical_path = os.path.join(config.BASE_DIR, file_path)
+        physical_path = os.path.join(config.STORAGE_BASE, file_path)
         if os.path.exists(physical_path):
             try:
                 os.remove(physical_path)
@@ -503,7 +509,7 @@ def delete_page_image(note_id: str, page_id: str, image_id: str, background_task
     # DBから画像情報を削除し、画像パスを取得
     image_path = sqlite_client.delete_note_image(image_id)
     if image_path:
-        image_physical_path = os.path.join(config.BASE_DIR, image_path)
+        image_physical_path = os.path.join(config.STORAGE_BASE, image_path)
         if os.path.exists(image_physical_path):
             try:
                 os.remove(image_physical_path)
@@ -596,16 +602,26 @@ def delete_page(note_id: str, page_id: str):
     if len(pages) <= 1:
         raise HTTPException(status_code=400, detail="唯一のページは削除できません。")
         
-    _, image_paths = sqlite_client.delete_page(page_id)
+    _, image_paths, attachments = sqlite_client.delete_page(page_id)
     for img_path in image_paths:
         if img_path:
-            image_physical_path = os.path.join(config.BASE_DIR, img_path)
+            image_physical_path = os.path.join(config.STORAGE_BASE, img_path)
             if os.path.exists(image_physical_path):
                 try:
                     os.remove(image_physical_path)
                 except Exception as e:
                     print(f"Failed to delete physical image file {image_physical_path}: {e}")
                     
+    for att in attachments:
+        if att["file_path"]:
+            att_physical_path = os.path.join(config.STORAGE_BASE, att["file_path"])
+            if os.path.exists(att_physical_path):
+                try:
+                    os.remove(att_physical_path)
+                except Exception as e:
+                    print(f"Failed to delete physical attachment file {att_physical_path}: {e}")
+        lance_client.delete_vector_data(att["id"])
+
     lance_client.delete_vector_data(page_id)
     return {"status": "deleted", "note_id": note_id, "page_id": page_id}
 
@@ -713,22 +729,39 @@ async def search_notes(q: str, limit: Optional[int] = None):
         else:
             note = sqlite_client.get_note(note_id)
             if note:
-                # 該当するページを取得
+                # 該当するページまたは添付ファイルを取得
                 page = next((p for p in note.get("pages", []) if p["id"] == r["id"]), None)
-                page_name = page["page_name"] if page else "ページ1"
-                matched_notes.append({
-                    "id": note["id"],
-                    "page_id": r["id"],
-                    "page_name": page_name,
-                    "title": f"{note['title']} > {page_name}",
-                    "parent_folder_id": note["parent_folder_id"],
-                    "ai_summary": page["ai_summary"] if page else note["ai_summary"],
-                    "ai_tags": page["ai_tags"] if page else note["ai_tags"],
-                    "raw_text": page["raw_text"] if page else note["raw_text"],
-                    "ai_ocr_text": page["ai_ocr_text"] if page else note["ai_ocr_text"],
-                    "image_path": page["images"][0]["image_path"] if page and page.get("images") else note["image_path"],
-                    "updated_at": note["updated_at"]
-                })
+                attachment = next((a for p in note.get("pages", []) for a in p.get("attachments", []) if a["id"] == r["id"]), None)
+                
+                if attachment:
+                    matched_notes.append({
+                        "id": note["id"],
+                        "page_id": r["id"],
+                        "page_name": f"添付ファイル: {attachment['file_name']}",
+                        "title": f"{note['title']} > 添付: {attachment['file_name']}",
+                        "parent_folder_id": note["parent_folder_id"],
+                        "ai_summary": attachment.get("ai_summary", ""),
+                        "ai_tags": "添付ファイル",
+                        "raw_text": attachment.get("ai_ocr_text", ""),
+                        "ai_ocr_text": attachment.get("ai_ocr_text", ""),
+                        "image_path": note["image_path"],
+                        "updated_at": note["updated_at"]
+                    })
+                else:
+                    page_name = page["page_name"] if page else "ページ1"
+                    matched_notes.append({
+                        "id": note["id"],
+                        "page_id": r["id"],
+                        "page_name": page_name,
+                        "title": f"{note['title']} > {page_name}",
+                        "parent_folder_id": note["parent_folder_id"],
+                        "ai_summary": page["ai_summary"] if page else note["ai_summary"],
+                        "ai_tags": page["ai_tags"] if page else note["ai_tags"],
+                        "raw_text": page["raw_text"] if page else note["raw_text"],
+                        "ai_ocr_text": page["ai_ocr_text"] if page else note["ai_ocr_text"],
+                        "image_path": page["images"][0]["image_path"] if page and page.get("images") else note["image_path"],
+                        "updated_at": note["updated_at"]
+                    })
             
     # ローカルRAGによる回答生成（matched_notesをコンテキストとして渡す）
     if matched_notes:
@@ -755,3 +788,111 @@ def update_settings(data: SettingsUpdate):
     for k, v in data.settings.items():
         sqlite_client.set_setting(k, str(v))
     return {"status": "success", "message": "設定を更新しました。"}
+
+@app.get("/api/system/select_directory")
+def select_directory():
+    import tkinter as tk
+    from tkinter import filedialog
+    try:
+        root = tk.Tk()
+        root.attributes("-topmost", True)
+        root.withdraw()
+        folder_path = filedialog.askdirectory(parent=root, title="保存先フォルダを選択してください")
+        root.destroy()
+        return {"path": folder_path}
+    except Exception as e:
+        return {"error": str(e)}
+
+class StorageCheckRequest(BaseModel):
+    new_path: str
+
+class StorageApplyRequest(BaseModel):
+    new_path: str
+    action: str
+
+@app.post("/api/settings/storage/check")
+def check_storage_path(request: StorageCheckRequest):
+    new_path = request.new_path
+    if not os.path.isabs(new_path):
+        return {"is_valid": False, "error": "絶対パスを指定してください。"}
+    
+    if not os.path.exists(new_path):
+        return {"is_valid": True, "exists": False, "has_data": False, "empty": True}
+        
+    try:
+        items = os.listdir(new_path)
+    except Exception as e:
+        return {"is_valid": False, "error": f"アクセスできません: {e}"}
+        
+    if not items:
+        return {"is_valid": True, "exists": True, "has_data": False, "empty": True}
+        
+    has_data = False
+    if "local_knowledge.db" in items or "lancedb_data" in items:
+        has_data = True
+        
+    return {"is_valid": True, "exists": True, "has_data": has_data, "empty": False}
+
+@app.post("/api/settings/storage/apply")
+def apply_storage_path(request: StorageApplyRequest):
+    new_path = request.new_path
+    action = request.action
+    
+    if not os.path.isabs(new_path):
+        raise HTTPException(status_code=400, detail="絶対パスを指定してください。")
+        
+    import shutil
+    import json
+    old_base = config.STORAGE_BASE
+    
+    # 接続をリセット
+    lance_client.reset_connection()
+    
+    try:
+        if action == "move":
+            os.makedirs(new_path, exist_ok=True)
+            for item in ["local_images", "local_attachments", "lancedb_data", "local_knowledge.db"]:
+                src = os.path.join(old_base, item)
+                dst = os.path.join(new_path, item)
+                if os.path.exists(src):
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(src, dst)
+            
+            os.makedirs(os.path.dirname(config.STORAGE_JSON_PATH), exist_ok=True)
+            with open(config.STORAGE_JSON_PATH, "w", encoding="utf-8") as f:
+                json.dump({"storage_base": new_path}, f)
+            config.update_storage_paths(new_path)
+            
+            # 古いデータを削除
+            for item in ["local_images", "local_attachments", "lancedb_data", "local_knowledge.db"]:
+                src = os.path.join(old_base, item)
+                if os.path.exists(src):
+                    if os.path.isdir(src):
+                        shutil.rmtree(src, ignore_errors=True)
+                    else:
+                        try:
+                            os.remove(src)
+                        except:
+                            pass
+        
+        elif action in ["create_new", "use_existing"]:
+            os.makedirs(new_path, exist_ok=True)
+            os.makedirs(os.path.dirname(config.STORAGE_JSON_PATH), exist_ok=True)
+            with open(config.STORAGE_JSON_PATH, "w", encoding="utf-8") as f:
+                json.dump({"storage_base": new_path}, f)
+            config.update_storage_paths(new_path)
+            
+            if action == "create_new" or action == "use_existing":
+                sqlite_client.init_db()
+                lance_client.get_table()
+    except Exception as e:
+        config.update_storage_paths(old_base)
+        raise HTTPException(status_code=500, detail=f"保存先の変更中にエラーが発生しました: {e}")
+        
+    return {"status": "success", "new_path": new_path}
+
+@app.get("/api/settings/storage/current")
+def get_current_storage():
+    return {"current_path": config.STORAGE_BASE}

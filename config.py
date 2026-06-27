@@ -59,14 +59,38 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 
-# 物理パス設定
-IMAGE_DIR = os.path.join(BASE_DIR, "local_images")
-ATTACHMENT_DIR = os.path.join(BASE_DIR, "local_attachments")
-SQLITE_DB_PATH = os.path.join(BASE_DIR, "local_knowledge.db")
-LANCEDB_DIR = os.path.join(BASE_DIR, "lancedb_data")
-RULES_PATH = os.path.join(BASE_DIR, "rules.md")
+# 物理パス設定（初期化）
+STORAGE_JSON_PATH = os.path.join(BASE_DIR, "env", "storage.json")
 
-# ディレクトリ作成
-os.makedirs(IMAGE_DIR, exist_ok=True)
-os.makedirs(ATTACHMENT_DIR, exist_ok=True)
-os.makedirs(LANCEDB_DIR, exist_ok=True)
+def get_storage_base():
+    if os.path.exists(STORAGE_JSON_PATH):
+        try:
+            with open(STORAGE_JSON_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("storage_base", BASE_DIR)
+        except Exception as e:
+            print(f"Error reading storage.json: {e}")
+    return BASE_DIR
+
+STORAGE_BASE = get_storage_base()
+
+IMAGE_DIR = ""
+ATTACHMENT_DIR = ""
+SQLITE_DB_PATH = ""
+LANCEDB_DIR = ""
+
+def update_storage_paths(new_base: str):
+    global STORAGE_BASE, IMAGE_DIR, ATTACHMENT_DIR, SQLITE_DB_PATH, LANCEDB_DIR
+    STORAGE_BASE = new_base
+    IMAGE_DIR = os.path.join(STORAGE_BASE, "local_images")
+    ATTACHMENT_DIR = os.path.join(STORAGE_BASE, "local_attachments")
+    SQLITE_DB_PATH = os.path.join(STORAGE_BASE, "local_knowledge.db")
+    LANCEDB_DIR = os.path.join(STORAGE_BASE, "lancedb_data")
+    
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    os.makedirs(ATTACHMENT_DIR, exist_ok=True)
+    os.makedirs(LANCEDB_DIR, exist_ok=True)
+
+# 初回ロード
+update_storage_paths(STORAGE_BASE)
+RULES_PATH = os.path.join(BASE_DIR, "rules.md")

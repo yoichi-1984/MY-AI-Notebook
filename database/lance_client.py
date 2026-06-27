@@ -1,16 +1,21 @@
 import os
 import lancedb
 import pyarrow as pa
-from config import LANCEDB_DIR
+import config
 
 _db = None
 _table = None
 TABLE_NAME = "knowledge_vector_table_v2"
 
+def reset_connection():
+    global _db, _table
+    _db = None
+    _table = None
+
 def get_table():
     global _db, _table
     if _table is None:
-        _db = lancedb.connect(LANCEDB_DIR)
+        _db = lancedb.connect(config.LANCEDB_DIR)
         if TABLE_NAME in _db.table_names():
             _table = _db.open_table(TABLE_NAME)
         else:
@@ -86,7 +91,7 @@ def migrate_to_v5(mappings: list[dict]):
     """
     global _db, _table
     if _db is None:
-        _db = lancedb.connect(LANCEDB_DIR)
+        _db = lancedb.connect(config.LANCEDB_DIR)
 
     # テーブルが存在しない場合は何もしない
     if TABLE_NAME not in _db.table_names():
