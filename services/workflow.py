@@ -157,7 +157,7 @@ async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classi
             ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
         )
         
-        fts_text = f"{note.get('raw_text') or ''}\n\n{structured_data.ocr_raw_text or ''}"
+        fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{note.get('raw_text') or ''}\n\n{structured_data.ocr_raw_text or ''}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
@@ -318,7 +318,7 @@ async def update_rules_with_feedback(note_id: str, correct_folder_id: str, reaso
             ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
         )
         
-        fts_text = f"{first_page['raw_text'] or ''}\n\n{first_page['ai_ocr_text'] or ''}"
+        fts_text = f"{note.get('title') or ''}\n\n{first_page.get('page_name') or ''}\n\n{first_page.get('raw_text') or ''}\n\n{first_page.get('ai_ocr_text') or ''}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
@@ -442,7 +442,7 @@ async def process_new_image_workflow(note_id: str, page_id: str, image_id: str):
             ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
         )
         
-        fts_text = f"{updated_note.get('raw_text') or ''}\n\n{merged_ocr_text or ''}"
+        fts_text = f"{updated_note.get('title') or ''}\n\n{updated_page.get('page_name') or ''}\n\n{updated_note.get('raw_text') or ''}\n\n{merged_ocr_text or ''}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
@@ -547,7 +547,7 @@ async def recalculate_on_image_delete(note_id: str, page_id: str):
             ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
         )
         
-        fts_text = f"{note.get('raw_text') or ''}\n\n{merged_ocr_text or ''}"
+        fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{note.get('raw_text') or ''}\n\n{merged_ocr_text or ''}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
@@ -627,7 +627,7 @@ async def recalculate_vector_on_edit(note_id: str, page_id: str):
         all_ocr_texts = [img["ai_ocr_text"] for img in images if img["ai_ocr_text"]]
         merged_ocr_text = "\n\n".join(all_ocr_texts)
         
-        fts_text = f"{target_page['raw_text'] or ''}\n\n{merged_ocr_text}"
+        fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{target_page.get('raw_text') or ''}\n\n{merged_ocr_text}"
         
         lance_client.upsert_vector_data(
             page_id=page_id,
@@ -781,7 +781,7 @@ async def process_document_import_workflow(note_id: str, file_path: str, filenam
                     ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
                 )
                 
-                fts_text = f"{raw_text or ''}\n\n{ocr_text or ''}"
+                fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{raw_text or ''}\n\n{ocr_text or ''}"
                 
                 lance_client.upsert_vector_data(
                     page_id=page_id,
@@ -999,7 +999,7 @@ async def process_attachment_ai_workflow(attachment_id: str):
                     ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
                 )
                 
-                fts_text = f"{attachment['file_name']}\n\n{merged_text or ''}"
+                fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{attachment.get('file_name', '')}\n\n{merged_text or ''}"
                 
                 lance_client.upsert_vector_data(
                     page_id=attachment_id, # LanceDBには id = attachment_id で登録
@@ -1092,7 +1092,7 @@ async def migrate_existing_data_to_v2():
                     ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
                 )
                 
-                fts_text = f"{page['raw_text'] or ''}\n\n{page['merged_ocr_text'] or ''}"
+                fts_text = f"{page.get('title', '')}\n\n{page.get('page_name') or ''}\n\n{page.get('raw_text') or ''}\n\n{page.get('merged_ocr_text') or ''}"
                 
                 lance_client.upsert_vector_data(
                     page_id=page_id,
@@ -1122,7 +1122,7 @@ async def migrate_existing_data_to_v2():
                     ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
                 )
                 
-                fts_text = f"{att['file_name'] or ''}\n\n{att['extracted_text'] or ''}"
+                fts_text = f"{att.get('title', '')}\n\n{att.get('page_name') or ''}\n\n{att.get('file_name', '')}\n\n{att.get('extracted_text') or ''}"
                 
                 lance_client.upsert_vector_data(
                     page_id=att_id,

@@ -218,3 +218,4 @@ local_images/
 local_attachments/
 old/
 test_local_knowledge.db
+refactor_workflow.py

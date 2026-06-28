@@ -3,13 +3,20 @@ import datetime
 import uuid
 import config
 
+from contextlib import contextmanager
+
+@contextmanager
 def get_connection():
     # ロック競合を防ぐために十分なタイムアウトを設定
     conn = sqlite3.connect(config.SQLITE_DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
-    return conn
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield conn
+    finally:
+        conn.close()
 
-LATEST_VERSION = 9
+LATEST_VERSION = 10
 
 def get_db_version(conn) -> int:
     cursor = conn.cursor()
@@ -102,7 +109,8 @@ def init_db():
                         "model_name": "gemini-3.5-flash",
                         "confidence_threshold": "0.7",
                         "rag_limit": "5",
-                        "rag_threshold": "0.8"
+                        "rag_threshold": "0.8",
+                        "default_task_priority": "1"
                     }
                     for k, v in default_settings.items():
                         cursor.execute("SELECT key, value FROM settings WHERE key = ?", (k,))
@@ -256,6 +264,10 @@ def init_db():
                         )
                     """)
                 
+                elif next_version == 10:
+                    cursor.execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT")
+                    cursor.execute("ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 1")
+                
                 conn.commit()
             except Exception as e:
                 conn.rollback()
@@ -274,6 +286,19 @@ def init_db():
         else:
             cursor.execute("UPDATE folders SET name = '📥 仮置き（自動整理）' WHERE id = 'inbox'")
             
+        # --- 外部キー有効化に向けた孤立レコード対策 ---
+        # 1. 存在しない親フォルダを指すノートを inbox に退避
+        cursor.execute("""
+            UPDATE notes 
+            SET parent_folder_id = 'inbox' 
+            WHERE parent_folder_id NOT IN (SELECT id FROM folders)
+        """)
+        # 2. 存在しないノートを指す note_pages, tasks, note_images, note_attachments を削除
+        cursor.execute("DELETE FROM note_pages WHERE note_id NOT IN (SELECT id FROM notes)")
+        cursor.execute("DELETE FROM tasks WHERE note_id NOT IN (SELECT id FROM notes)")
+        cursor.execute("DELETE FROM note_images WHERE note_id NOT IN (SELECT id FROM notes)")
+        cursor.execute("DELETE FROM note_attachments WHERE note_id NOT IN (SELECT id FROM notes)")
+        
         # 既存の thinking_level の値の正規化 (standard/creative -> medium)
         cursor.execute("SELECT value FROM settings WHERE key = 'thinking_level'")
         row = cursor.fetchone()
@@ -286,6 +311,16 @@ def init_db():
                 elif val == "low":
                     new_val = "low"
                 cursor.execute("UPDATE settings SET value = ? WHERE key = 'thinking_level'", (new_val,))
+
+        # --- 新規設定の既存DBへの補完 ---
+        supplemental_defaults = {
+            "default_task_priority": "1"
+        }
+        for k, v in supplemental_defaults.items():
+            cursor.execute("SELECT key FROM settings WHERE key = ?", (k,))
+            if not cursor.fetchone():
+                cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (k, v))
+                
         conn.commit()
 
 def create_folder(name: str, parent_id: str = None) -> str:
@@ -650,7 +685,7 @@ def get_note(note_id: str):
             cursor.execute("SELECT id, image_path, ai_ocr_text FROM note_images WHERE page_id = ? ORDER BY created_at ASC", (p_dict["id"],))
             p_dict["images"] = [dict(img_row) for img_row in cursor.fetchall()]
             # ページごとのタスクを取得
-            cursor.execute("SELECT id, description, due_date, is_completed FROM tasks WHERE page_id = ?", (p_dict["id"],))
+            cursor.execute("SELECT id, description, due_date, is_completed, priority, completed_at FROM tasks WHERE page_id = ?", (p_dict["id"],))
             p_dict["tasks"] = [dict(t_row) for t_row in cursor.fetchall()]
             # ページごとの添付ファイルを取得
             cursor.execute("SELECT id, file_path, file_name, file_size, mime_type, created_at, ai_summary, ai_ocr_text FROM note_attachments WHERE page_id = ? ORDER BY created_at ASC", (p_dict["id"],))
@@ -746,19 +781,33 @@ def update_folder_name(folder_id: str, new_name: str) -> None:
         )
         conn.commit()
 
-def delete_folder(folder_id: str, delete_notes: bool = False) -> None:
+def get_subfolder_ids(conn, folder_id: str) -> list[str]:
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM folders WHERE parent_id = ?", (folder_id,))
+    children = [row["id"] for row in cursor.fetchall()]
+    all_sub = []
+    for c in children:
+        all_sub.append(c)
+        all_sub.extend(get_subfolder_ids(conn, c))
+    return all_sub
+
+def delete_folder(folder_id: str, strategy: str = "move_to_inbox") -> None:
     now = datetime.datetime.now().isoformat()
     with get_connection() as conn:
+        all_folder_ids = [folder_id] + get_subfolder_ids(conn, folder_id)
         cursor = conn.cursor()
-        if not delete_notes:
-            # フォルダ内のノートを inbox に退避する
-            cursor.execute(
-                "UPDATE notes SET parent_folder_id = 'inbox', updated_at = ? WHERE parent_folder_id = ?",
-                (now, folder_id)
-            )
         
-
-        cursor.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+        if strategy == "move_to_inbox":
+            for f_id in all_folder_ids:
+                # フォルダ内のノートを inbox に退避する
+                cursor.execute(
+                    "UPDATE notes SET parent_folder_id = 'inbox', updated_at = ? WHERE parent_folder_id = ?",
+                    (now, f_id)
+                )
+        
+        for f_id in reversed(all_folder_ids):
+            cursor.execute("DELETE FROM folders WHERE id = ?", (f_id,))
+            
         conn.commit()
 
 def create_manual_note(note_id: str, parent_folder_id: str, title: str) -> str:
@@ -872,7 +921,7 @@ def get_all_pages_for_migration():
         
         # ページの取得
         cursor.execute("""
-            SELECT p.id as page_id, n.id as note_id, p.raw_text, p.ai_summary, p.ai_tags
+            SELECT p.id as page_id, n.id as note_id, n.title, p.page_name, p.raw_text, p.ai_summary, p.ai_tags
             FROM note_pages p
             JOIN notes n ON p.note_id = n.id
         """)
@@ -886,9 +935,10 @@ def get_all_pages_for_migration():
             
         # 添付ファイルの取得 (note_attachments)
         cursor.execute("""
-            SELECT a.id as attachment_id, n.id as note_id, a.file_name, a.ai_ocr_text as extracted_text, a.ai_summary
+            SELECT a.id as attachment_id, n.id as note_id, n.title, p.page_name, a.file_name, a.ai_ocr_text as extracted_text, a.ai_summary
             FROM note_attachments a
             JOIN notes n ON a.note_id = n.id
+            JOIN note_pages p ON a.page_id = p.id
         """)
         attachments = [dict(row) for row in cursor.fetchall()]
         
@@ -946,11 +996,56 @@ def update_api_job_status(job_id: int, status: str, error_message: str = None) -
         conn.commit()
 
 
-def delete_api_job(job_id: int) -> None:
+def create_task(note_id: str, page_id: str, description: str, due_date: str = None, priority: int = 1) -> str:
+    task_id = str(uuid.uuid4())
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM api_jobs WHERE id = ?", (job_id,))
+        cursor.execute(
+            "INSERT INTO tasks (id, note_id, page_id, description, due_date, is_completed, priority) VALUES (?, ?, ?, ?, ?, 0, ?)",
+            (task_id, note_id, page_id, description, due_date, priority)
+        )
         conn.commit()
+    return task_id
+
+def update_task(task_id: str, description: str = None, due_date: str = None, is_completed: int = None, priority: int = None) -> None:
+    updates = []
+    params = []
+    
+    if description is not None:
+        updates.append("description = ?")
+        params.append(description)
+    if due_date is not None:
+        updates.append("due_date = ?")
+        params.append(due_date)
+    if priority is not None:
+        updates.append("priority = ?")
+        params.append(priority)
+    if is_completed is not None:
+        updates.append("is_completed = ?")
+        params.append(is_completed)
+        # completed_at の自動管理: 完了=現在時刻、未完了=NULL
+        updates.append("completed_at = ?")
+        if is_completed == 1:
+            params.append(datetime.datetime.now().isoformat())
+        else:
+            params.append(None)
+            
+    if not updates:
+        return
+        
+    params.append(task_id)
+    query = f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?"
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, tuple(params))
+        conn.commit()
+
+def delete_task(task_id: str) -> None:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.commit()
+
 
 
 

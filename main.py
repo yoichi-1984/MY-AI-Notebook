@@ -2,7 +2,8 @@ import os
 import uuid
 import aiofiles
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+import re
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, WebSocket, WebSocketDisconnect, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +13,21 @@ from database import sqlite_client, lance_client
 from services import workflow, ai_agent
 
 app = FastAPI(title="AI Native Local Knowledge Database")
+
+def _safe_physical_path(relative_path: str) -> Optional[str]:
+    """
+    相対パスを STORAGE_BASE 配下の安全な絶対パスに変換する。
+    ディレクトリトラバーサルを防ぐ。STORAGE_BASE の外を指す場合は None を返す。
+    """
+    if not relative_path:
+        return None
+    rel = relative_path.lstrip("/\\")
+    full = os.path.realpath(os.path.join(config.STORAGE_BASE, rel))
+    base = os.path.realpath(config.STORAGE_BASE)
+    if not full.startswith(base + os.sep) and full != base:
+        print(f"[Security] Path traversal attempt blocked: {relative_path}")
+        return None
+    return full
 
 current_network_online = True
 
@@ -297,7 +313,7 @@ def update_folder(folder_id: str, folder_data: FolderUpdate):
 
 # 3.6. フォルダ削除
 @app.delete("/api/folders/{folder_id}")
-def delete_folder(folder_id: str, delete_notes: bool = False):
+def delete_folder(folder_id: str, strategy: str = "move_to_inbox"):
     if folder_id == "inbox":
         raise HTTPException(status_code=400, detail="インボックスは削除できません。")
         
@@ -305,24 +321,27 @@ def delete_folder(folder_id: str, delete_notes: bool = False):
     if not any(f["id"] == folder_id for f in folders):
         raise HTTPException(status_code=404, detail="フォルダが見つかりません。")
         
-    if delete_notes:
-        notes = sqlite_client.get_notes_by_folder(folder_id)
-        for note in notes:
-            note_id = note["id"]
-            # DBから削除し、関連画像パスを取得
-            image_paths = sqlite_client.delete_note(note_id)
-            for img_path in image_paths:
-                if img_path:
-                    image_physical_path = os.path.join(config.STORAGE_BASE, img_path)
-                    if os.path.exists(image_physical_path):
-                        try:
-                            os.remove(image_physical_path)
-                        except Exception as e:
-                            print(f"Failed to delete physical image file {image_physical_path}: {e}")
-                                
-            lance_client.delete_all_vector_data_for_note(note_id)
+    if strategy == "delete_all":
+        from database.sqlite_client import get_subfolder_ids, get_connection
+        with get_connection() as conn:
+            all_folder_ids = [folder_id] + get_subfolder_ids(conn, folder_id)
+        
+        for f_id in all_folder_ids:
+            notes = sqlite_client.get_notes_by_folder(f_id)
+            for note in notes:
+                note_id = note["id"]
+                image_paths = sqlite_client.delete_note(note_id)
+                for img_path in image_paths:
+                    if img_path:
+                        safe_path = _safe_physical_path(img_path)
+                        if safe_path and os.path.exists(safe_path):
+                            try:
+                                os.remove(safe_path)
+                            except Exception as e:
+                                print(f"Failed to delete {safe_path}: {e}")
+                lance_client.delete_all_vector_data_for_note(note_id)
                         
-    sqlite_client.delete_folder(folder_id, delete_notes=delete_notes)
+    sqlite_client.delete_folder(folder_id, strategy=strategy)
     return {"status": "deleted", "folder_id": folder_id}
 
 
@@ -352,12 +371,12 @@ def delete_note(note_id: str):
     # 複数画像の物理削除
     for img_path in image_paths:
         if img_path:
-            image_physical_path = os.path.join(config.STORAGE_BASE, img_path)
-            if os.path.exists(image_physical_path):
+            safe_path = _safe_physical_path(img_path)
+            if safe_path and os.path.exists(safe_path):
                 try:
-                    os.remove(image_physical_path)
+                    os.remove(safe_path)
                 except Exception as e:
-                    print(f"Failed to delete physical image file {image_physical_path}: {e}")
+                    print(f"Failed to delete physical image file {safe_path}: {e}")
 
     # LanceDB ベクトルデータ削除 (ノートに紐づく全ページ分)
     lance_client.delete_all_vector_data_for_note(note_id)
@@ -497,12 +516,12 @@ def download_attachment(attachment_id: str):
     if not attachment:
         raise HTTPException(status_code=404, detail="添付ファイルが見つかりません。")
         
-    physical_path = os.path.abspath(os.path.join(config.STORAGE_BASE, attachment["file_path"]))
-    if not os.path.exists(physical_path):
+    safe_path = _safe_physical_path(attachment["file_path"])
+    if not safe_path or not os.path.exists(safe_path):
         raise HTTPException(status_code=404, detail="物理ファイルが存在しません。")
         
     return FileResponse(
-        path=physical_path,
+        path=safe_path,
         filename=attachment["file_name"],
         media_type=attachment["mime_type"] or "application/octet-stream"
     )
@@ -522,12 +541,12 @@ async def delete_attachment(attachment_id: str, background_tasks: BackgroundTask
     
     # 物理ファイル削除
     if file_path:
-        physical_path = os.path.join(config.STORAGE_BASE, file_path)
-        if os.path.exists(physical_path):
+        safe_path = _safe_physical_path(file_path)
+        if safe_path and os.path.exists(safe_path):
             try:
-                os.remove(physical_path)
+                os.remove(safe_path)
             except Exception as e:
-                print(f"Failed to delete physical file {physical_path}: {e}")
+                print(f"Failed to delete physical file {safe_path}: {e}")
                 
     # LanceDB からのベクトル削除
     lance_client.delete_vector_data(attachment_id)
@@ -596,12 +615,12 @@ def delete_page_image(note_id: str, page_id: str, image_id: str, background_task
     # DBから画像情報を削除し、画像パスを取得
     image_path = sqlite_client.delete_note_image(image_id)
     if image_path:
-        image_physical_path = os.path.join(config.STORAGE_BASE, image_path)
-        if os.path.exists(image_physical_path):
+        safe_path = _safe_physical_path(image_path)
+        if safe_path and os.path.exists(safe_path):
             try:
-                os.remove(image_physical_path)
+                os.remove(safe_path)
             except Exception as e:
-                print(f"Failed to delete physical image file {image_physical_path}: {e}")
+                print(f"Failed to delete physical image file {safe_path}: {e}")
 
     # ステータスを更新し、バックグラウンドで再構造化
     sqlite_client.update_note_status(note_id, "processing")
@@ -647,6 +666,62 @@ class PageUpdate(BaseModel):
     reference_urls: Optional[str] = ""
     ai_summary: Optional[str] = ""
     ai_tags: Optional[str] = ""
+
+class TaskCreate(BaseModel):
+    description: str
+    due_date: Optional[str] = None
+    priority: Optional[int] = None
+
+    @field_validator('due_date')
+    def validate_due_date(cls, v):
+        if v is not None:
+            if not re.match(r'^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$', v):
+                raise ValueError("due_date must be in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
+        return v
+
+class TaskUpdate(BaseModel):
+    description: Optional[str] = None
+    due_date: Optional[str] = None
+    is_completed: Optional[int] = None
+    priority: Optional[int] = None
+    
+    @field_validator('due_date')
+    def validate_due_date(cls, v):
+        if v is not None:
+            if not re.match(r'^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$', v):
+                raise ValueError("due_date must be in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
+        return v
+
+@app.post("/api/notes/{note_id}/pages/{page_id}/tasks")
+def create_task(note_id: str, page_id: str, task_data: TaskCreate):
+    note = sqlite_client.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="ノートが見つかりません。")
+    priority = task_data.priority if task_data.priority is not None else 1
+    task_id = sqlite_client.create_task(
+        note_id=note_id,
+        page_id=page_id,
+        description=task_data.description,
+        due_date=task_data.due_date,
+        priority=priority
+    )
+    return {"status": "created", "task_id": task_id}
+
+@app.put("/api/tasks/{task_id}")
+def update_task(task_id: str, task_data: TaskUpdate):
+    sqlite_client.update_task(
+        task_id=task_id,
+        description=task_data.description,
+        due_date=task_data.due_date,
+        is_completed=task_data.is_completed,
+        priority=task_data.priority
+    )
+    return {"status": "updated"}
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: str):
+    sqlite_client.delete_task(task_id)
+    return {"status": "deleted"}
 
 @app.put("/api/notes/{note_id}/pages/{page_id}")
 def update_page(note_id: str, page_id: str, page_data: PageUpdate, background_tasks: BackgroundTasks):
@@ -697,21 +772,21 @@ def delete_page(note_id: str, page_id: str):
     _, image_paths, attachments = sqlite_client.delete_page(page_id)
     for img_path in image_paths:
         if img_path:
-            image_physical_path = os.path.join(config.STORAGE_BASE, img_path)
-            if os.path.exists(image_physical_path):
+            safe_path = _safe_physical_path(img_path)
+            if safe_path and os.path.exists(safe_path):
                 try:
-                    os.remove(image_physical_path)
+                    os.remove(safe_path)
                 except Exception as e:
-                    print(f"Failed to delete physical image file {image_physical_path}: {e}")
+                    print(f"Failed to delete physical image file {safe_path}: {e}")
                     
     for att in attachments:
         if att["file_path"]:
-            att_physical_path = os.path.join(config.STORAGE_BASE, att["file_path"])
-            if os.path.exists(att_physical_path):
+            safe_path = _safe_physical_path(att["file_path"])
+            if safe_path and os.path.exists(safe_path):
                 try:
-                    os.remove(att_physical_path)
+                    os.remove(safe_path)
                 except Exception as e:
-                    print(f"Failed to delete physical attachment file {att_physical_path}: {e}")
+                    print(f"Failed to delete physical attachment file {safe_path}: {e}")
         lance_client.delete_vector_data(att["id"])
 
     lance_client.delete_vector_data(page_id)

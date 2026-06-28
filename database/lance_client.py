@@ -183,8 +183,18 @@ def hybrid_search(query_vector: list[float], query_text: str, limit: int = 5, di
     add_rankings(body_results)
     add_rankings(fts_results)
         
+    # note_id でグループ化して重複排除 (同一ノートの複数ページ対応)
+    grouped_by_note = {}
+    for entry in rrf_scores.values():
+        note_id = entry["item"].get("note_id", "")
+        if not note_id:
+            continue
+        # 最もスコアの高いページを採用
+        if note_id not in grouped_by_note or entry["score"] > grouped_by_note[note_id]["score"]:
+            grouped_by_note[note_id] = entry
+
     # スコアの高い順にソート
-    sorted_results = sorted(rrf_scores.values(), key=lambda x: x["score"], reverse=True)
+    sorted_results = sorted(grouped_by_note.values(), key=lambda x: x["score"], reverse=True)
     
     # 結果整形して返却
     final_results = []
