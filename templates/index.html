@@ -624,6 +624,13 @@
         let currentNote = null;
         let currentUrls = [];
         let currentPageId = null;
+        let currentDetailTab = 'memo';
+        
+        // ユーザーの手動編集を正確に検知するための状態記憶
+        let lastRenderedTitle = '';
+        let lastRenderedRawText = '';
+        let lastRenderedSummary = '';
+        let lastRenderedTags = '';
         let ws = null;
         
         // 直前の右カラム表示状態のキャッシュ (設定画面を開いた後に復元するため)
@@ -1012,7 +1019,7 @@
 
                 // タイトル決定 (未分類や空なら生テキストの切り抜き)
                 const displayTitle = note.title || (note.raw_text || '').substring(0, 15) || '新規ノート(画像)...';
-                const snippet = note.ai_summary ? note.ai_summary.split('n')[0] : (note.raw_text || '').substring(0, 30);
+                const snippet = note.ai_summary ? note.ai_summary.split('\n')[0] : (note.raw_text || '').substring(0, 30);
 
                 item.innerHTML = `
                     <div class="flex items-start justify-between space-x-2">
@@ -1066,22 +1073,22 @@
                 const pageSummary = currentPage ? currentPage.ai_summary : '';
                 const pageTags = currentPage ? currentPage.ai_tags : '';
 
-                const normalizeText = (str) => (str || '').replace(/rn/g, 'n').trim();
+                const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
                 const normCurrentText = normalizeText(currentRawTextEl.value);
-                const normPageText = normalizeText(pageRawText);
-                const hasTextChanges = (normCurrentText !== normPageText);
+                const normRenderedText = normalizeText(lastRenderedRawText);
+                const hasTextChanges = (normCurrentText !== normRenderedText);
                 
                 const currentTitle = currentTitleEl.value.trim();
-                const savedTitle = (currentNote.title || '').trim();
-                const hasTitleChanges = (currentTitle !== savedTitle);
+                const renderedTitle = lastRenderedTitle.trim();
+                const hasTitleChanges = (currentTitle !== renderedTitle);
 
                 const normCurrentSummary = normalizeText(currentSummaryEl.value);
-                const normPageSummary = normalizeText(pageSummary);
-                const hasSummaryChanges = (normCurrentSummary !== normPageSummary);
+                const normRenderedSummary = normalizeText(lastRenderedSummary);
+                const hasSummaryChanges = (normCurrentSummary !== normRenderedSummary);
 
                 const normCurrentTags = (currentTagsEl.value || '').split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
-                const normPageTags = (pageTags || '').split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
-                const hasTagsChanges = (normCurrentTags !== normPageTags);
+                const normRenderedTags = (lastRenderedTags || '').split(',').map(t => t.trim()).filter(Boolean).sort().join(',');
+                const hasTagsChanges = (normCurrentTags !== normRenderedTags);
 
                 const isChanged = hasTextChanges || hasTitleChanges || hasSummaryChanges || hasTagsChanges;
 
@@ -1192,6 +1199,12 @@
                 if (!res.ok) throw new Error("Note not found");
                 const note = await res.json();
                 
+                // レースコンディション対策：非同期通信の間に別のノートが選択されていた場合は破棄する
+                if (currentNoteId !== noteId) {
+                    console.log(`[selectNote] Aborting load of ${noteId} because currentNoteId changed to ${currentNoteId}`);
+                    return 'cancel';
+                }
+                
                 currentNote = note;
                 
                 // キャッシュ更新
@@ -1248,12 +1261,13 @@
             // タイトル入力欄の上書き制御
             const titleEl = document.getElementById('detailTitle');
             const isEditingTitle = (document.activeElement === titleEl);
-            const hasUnsavedTitle = (titleEl.value.trim() !== (currentNote.title || '').trim());
+            const hasUnsavedTitle = (titleEl.value.trim() !== lastRenderedTitle.trim());
             
             if (!forceOverwriteText && (isEditingTitle || hasUnsavedTitle)) {
                 console.log("ユーザーがタイトル編集中のため、タイトルの上書きをスキップします。");
             } else {
                 titleEl.value = currentNote.title || '';
+                lastRenderedTitle = currentNote.title || '';
             }
             
             // メモ、要約、タグ入力欄の上書き制御
@@ -1264,9 +1278,9 @@
             const isEditing = (document.activeElement === rawTextEl || document.activeElement === summaryEl || document.activeElement === tagsEl);
             const normalizeText = (str) => (str || '').replace(/\r\n/g, '\n').trim();
             
-            const hasUnsavedRawText = (normalizeText(rawTextEl.value) !== normalizeText(page.raw_text));
-            const hasUnsavedSummary = (normalizeText(summaryEl.value) !== normalizeText(page.ai_summary));
-            const hasUnsavedTags = (normalizeText(tagsEl.value) !== normalizeText(page.ai_tags));
+            const hasUnsavedRawText = (normalizeText(rawTextEl.value) !== normalizeText(lastRenderedRawText));
+            const hasUnsavedSummary = (normalizeText(summaryEl.value) !== normalizeText(lastRenderedSummary));
+            const hasUnsavedTags = (normalizeText(tagsEl.value) !== normalizeText(lastRenderedTags));
 
             if (!forceOverwriteText && (isEditing || hasUnsavedRawText || hasUnsavedSummary || hasUnsavedTags)) {
                 console.log("ユーザーが編集中のため、メモ本文・要約・タグの上書きをスキップします。");
@@ -1274,13 +1288,17 @@
                 rawTextEl.value = page.raw_text || '';
                 summaryEl.value = page.ai_summary || '';
                 tagsEl.value = page.ai_tags || '';
+                
+                lastRenderedRawText = page.raw_text || '';
+                lastRenderedSummary = page.ai_summary || '';
+                lastRenderedTags = page.ai_tags || '';
             }
             
             // タグのパース
             renderTagsList(page.ai_tags);
 
             // 参考URLのパースとレンダリング
-            currentUrls = page.reference_urls ? page.reference_urls.split('n').filter(u => u.trim() !== '') : [];
+            currentUrls = page.reference_urls ? page.reference_urls.split('\n').filter(u => u.trim() !== '') : [];
             renderUrlsList();
 
             // 画像処理
@@ -1516,7 +1534,7 @@
                             body: JSON.stringify({
                                 page_name: newTitle,
                                 raw_text: raw_text,
-                                reference_urls: currentUrls.join('n'),
+                                reference_urls: currentUrls.join('\n'),
                                 ai_summary: ai_summary,
                                 ai_tags: ai_tags
                             })
@@ -1588,7 +1606,7 @@
             const raw_text = customRawText !== null ? customRawText : document.getElementById('detailRawText').value;
             const ai_summary = customSummary !== null ? customSummary : document.getElementById('detailSummary').value;
             const ai_tags = customTags !== null ? customTags : document.getElementById('detailTags').value;
-            const reference_urls = customUrlsList !== null ? customUrlsList.join('n') : currentUrls.join('n');
+            const reference_urls = customUrlsList !== null ? customUrlsList.join('\n') : currentUrls.join('\n');
             const parent_folder_id = currentNote.parent_folder_id || currentFolderId || 'inbox';
             
             try {
@@ -1632,7 +1650,7 @@
             const page = (currentNote.pages || []).find(p => p.id === targetPageId);
             if (page) {
                 page.raw_text = captureRawText;
-                page.reference_urls = captureUrls.join('n');
+                page.reference_urls = captureUrls.join('\n');
                 page.ai_summary = captureSummary;
                 page.ai_tags = captureTags;
             }
@@ -1649,7 +1667,7 @@
                         body: JSON.stringify({
                             page_name: capturePageName,
                             raw_text: captureRawText,
-                            reference_urls: captureUrls.join('n'),
+                            reference_urls: captureUrls.join('\n'),
                             ai_summary: captureSummary,
                             ai_tags: captureTags
                         })

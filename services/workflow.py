@@ -23,6 +23,64 @@ async def broadcast_ws_message(message: dict):
             if conn in active_connections:
                 active_connections.remove(conn)
 
+def chunk_text(text: str, max_chars: int = 2000, overlap: int = 200) -> list[str]:
+    """テキストを指定文字数で分割する（句点や改行を優先して区切る）"""
+    if not text:
+        return []
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        if end < len(text):
+            # 後ろから改行を探す
+            last_newline = text.rfind('\n', start, end)
+            if last_newline != -1 and last_newline > start + (max_chars // 2):
+                end = last_newline + 1
+            else:
+                # 後ろから句点を探す
+                last_period = text.rfind('。', start, end)
+                if last_period != -1 and last_period > start + (max_chars // 2):
+                    end = last_period + 1
+        chunks.append(text[start:end])
+        if end == len(text):
+            break
+        start = end - overlap
+    return chunks
+
+async def register_document_vectors(source_id: str, note_id: str, ai_summary: str, tags_text: str, body_text: str, fts_base_text: str):
+    """
+    ドキュメント（ページまたは添付ファイル）のテキストを分割し、並列でベクトル化してLanceDBに登録する統合関数
+    """
+    summary_vector, tags_vector = await asyncio.gather(
+        ai_agent.generate_embedding_via_azure(ai_summary, dimensions=512),
+        ai_agent.generate_embedding_via_azure(tags_text, dimensions=512)
+    )
+    
+    body_chunks_text = chunk_text(body_text)
+    if not body_chunks_text:
+        # body_textが空でも最低1チャンク登録する（Azure APIは空文字NGの場合があるためスペースで代替）
+        body_chunks_text = [" "]
+        
+    # 各チャンクのベクトル化を並列実行（空文字のまま送ることを避けるため strip してスペースにフォールバック）
+    tasks = [ai_agent.generate_embedding_via_azure(chunk if chunk.strip() else " ", dimensions=512) for chunk in body_chunks_text]
+    body_vectors = await asyncio.gather(*tasks)
+    
+    chunks_data = []
+    for i, (chunk_text_val, body_vector) in enumerate(zip(body_chunks_text, body_vectors)):
+        chunks_data.append({
+            "chunk_index": i,
+            "summary_vector": summary_vector,
+            "tags_vector": tags_vector,
+            "body_vector": body_vector,
+            "fts_text": f"{fts_base_text}\n\n{chunk_text_val}"
+        })
+        
+    lance_client.upsert_vector_data_chunks(
+        source_id=source_id,
+        note_id=note_id,
+        chunks_data=chunks_data
+    )
+
 async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classification: bool = False):
     """
     ノート作成・画像追加時のバックグラウンド非同期構造化・自動仕分けパイプライン (ページ単位)
@@ -151,21 +209,15 @@ async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classi
         tags_text = f"タグ: {tags_str}"
         body_text = f"本文: {note.get('raw_text') or ''}"
         
-        summary_vector, tags_vector, body_vector = await asyncio.gather(
-            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-        )
-        
         fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{note.get('raw_text') or ''}\n\n{structured_data.ocr_raw_text or ''}"
         
-        lance_client.upsert_vector_data(
-            page_id=page_id,
+        await register_document_vectors(
+            source_id=page_id,
             note_id=note_id,
-            summary_vector=summary_vector,
-            tags_vector=tags_vector,
-            body_vector=body_vector,
-            fts_text=fts_text
+            ai_summary=summary_text,
+            tags_text=tags_text,
+            body_text=body_text,
+            fts_base_text=fts_text
         )
 
         # WebSocketプッシュ送信
@@ -312,21 +364,15 @@ async def update_rules_with_feedback(note_id: str, correct_folder_id: str, reaso
         tags_text = f"タグ: {first_page['ai_tags'] or ''}"
         body_text = f"本文: {first_page['raw_text'] or ''}"
         
-        summary_vector, tags_vector, body_vector = await asyncio.gather(
-            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-        )
-        
         fts_text = f"{note.get('title') or ''}\n\n{first_page.get('page_name') or ''}\n\n{first_page.get('raw_text') or ''}\n\n{first_page.get('ai_ocr_text') or ''}"
         
-        lance_client.upsert_vector_data(
-            page_id=page_id,
+        await register_document_vectors(
+            source_id=page_id,
             note_id=note_id,
-            summary_vector=summary_vector,
-            tags_vector=tags_vector,
-            body_vector=body_vector,
-            fts_text=fts_text
+            ai_summary=summary_text,
+            tags_text=tags_text,
+            body_text=body_text,
+            fts_base_text=fts_text
         )
 
         # WebSocketで画面へ通知
@@ -436,21 +482,15 @@ async def process_new_image_workflow(note_id: str, page_id: str, image_id: str):
         tags_text = f"タグ: {tags_str}"
         body_text = f"本文: {updated_note.get('raw_text') or ''}"
         
-        summary_vector, tags_vector, body_vector = await asyncio.gather(
-            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-        )
-        
         fts_text = f"{updated_note.get('title') or ''}\n\n{updated_page.get('page_name') or ''}\n\n{updated_note.get('raw_text') or ''}\n\n{merged_ocr_text or ''}"
         
-        lance_client.upsert_vector_data(
-            page_id=page_id,
+        await register_document_vectors(
+            source_id=page_id,
             note_id=note_id,
-            summary_vector=summary_vector,
-            tags_vector=tags_vector,
-            body_vector=body_vector,
-            fts_text=fts_text
+            ai_summary=summary_text,
+            tags_text=tags_text,
+            body_text=body_text,
+            fts_base_text=fts_text
         )
 
         # 7. WebSocketプッシュ送信
@@ -541,21 +581,15 @@ async def recalculate_on_image_delete(note_id: str, page_id: str):
         tags_text = f"タグ: {tags_str}"
         body_text = f"本文: {note.get('raw_text') or ''}"
         
-        summary_vector, tags_vector, body_vector = await asyncio.gather(
-            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-        )
-        
         fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{note.get('raw_text') or ''}\n\n{merged_ocr_text or ''}"
         
-        lance_client.upsert_vector_data(
-            page_id=page_id,
+        await register_document_vectors(
+            source_id=page_id,
             note_id=note_id,
-            summary_vector=summary_vector,
-            tags_vector=tags_vector,
-            body_vector=body_vector,
-            fts_text=fts_text
+            ai_summary=summary_text,
+            tags_text=tags_text,
+            body_text=body_text,
+            fts_base_text=fts_text
         )
 
         await broadcast_ws_message({
@@ -616,12 +650,6 @@ async def recalculate_vector_on_edit(note_id: str, page_id: str):
         tags_text = f"タグ: {target_page['ai_tags'] or ''}"
         body_text = f"本文: {target_page['raw_text'] or ''}"
         
-        summary_vector, tags_vector, body_vector = await asyncio.gather(
-            ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-            ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-        )
-        
         # 画像のOCRテキストをマージ
         images = target_page.get("images", [])
         all_ocr_texts = [img["ai_ocr_text"] for img in images if img["ai_ocr_text"]]
@@ -629,13 +657,13 @@ async def recalculate_vector_on_edit(note_id: str, page_id: str):
         
         fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{target_page.get('raw_text') or ''}\n\n{merged_ocr_text}"
         
-        lance_client.upsert_vector_data(
-            page_id=page_id,
+        await register_document_vectors(
+            source_id=page_id,
             note_id=note_id,
-            summary_vector=summary_vector,
-            tags_vector=tags_vector,
-            body_vector=body_vector,
-            fts_text=fts_text
+            ai_summary=summary_text,
+            tags_text=tags_text,
+            body_text=body_text,
+            fts_base_text=fts_text
         )
         print(f"Recalculated embedding for note {note_id} page {page_id} after edit.")
     except Exception as e:
@@ -775,21 +803,15 @@ async def process_document_import_workflow(note_id: str, file_path: str, filenam
                 tags_text = f"タグ: {ai_tags}"
                 body_text = f"本文: {raw_text or ''}"
                 
-                summary_vector, tags_vector, body_vector = await asyncio.gather(
-                    ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-                    ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-                    ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-                )
-                
                 fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{raw_text or ''}\n\n{ocr_text or ''}"
                 
-                lance_client.upsert_vector_data(
-                    page_id=page_id,
+                await register_document_vectors(
+                    source_id=page_id,
                     note_id=note_id,
-                    summary_vector=summary_vector,
-                    tags_vector=tags_vector,
-                    body_vector=body_vector,
-                    fts_text=fts_text
+                    ai_summary=summary_text,
+                    tags_text=tags_text,
+                    body_text=body_text,
+                    fts_base_text=fts_text
                 )
 
             # 進捗の通知
@@ -993,21 +1015,19 @@ async def process_attachment_ai_workflow(attachment_id: str):
             body_text = f"本文: {merged_text or ''}"
             
             try:
-                summary_vector, tags_vector, body_vector = await asyncio.gather(
-                    ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-                    ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-                    ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-                )
-                
+                target_page = {}
+                if note and "pages" in note:
+                    target_page = next((p for p in note["pages"] if p["id"] == attachment.get("page_id")), {})
+                    
                 fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{attachment.get('file_name', '')}\n\n{merged_text or ''}"
                 
-                lance_client.upsert_vector_data(
-                    page_id=attachment_id, # LanceDBには id = attachment_id で登録
+                await register_document_vectors(
+                    source_id=attachment_id,
                     note_id=note_id,
-                    summary_vector=summary_vector,
-                    tags_vector=tags_vector,
-                    body_vector=body_vector,
-                    fts_text=fts_text
+                    ai_summary=summary_text,
+                    tags_text=tags_text,
+                    body_text=body_text,
+                    fts_base_text=fts_text
                 )
             except Exception as ve:
                 print(f"[Warning] 添付ファイルのベクトル登録に失敗しました: {ve}")
@@ -1086,21 +1106,15 @@ async def migrate_existing_data_to_v2():
             
             try:
                 # 3つのベクトルを並行で取得
-                summary_vector, tags_vector, body_vector = await asyncio.gather(
-                    ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-                    ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-                    ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-                )
-                
                 fts_text = f"{page.get('title', '')}\n\n{page.get('page_name') or ''}\n\n{page.get('raw_text') or ''}\n\n{page.get('merged_ocr_text') or ''}"
                 
-                lance_client.upsert_vector_data(
-                    page_id=page_id,
+                await register_document_vectors(
+                    source_id=page_id,
                     note_id=note_id,
-                    summary_vector=summary_vector,
-                    tags_vector=tags_vector,
-                    body_vector=body_vector,
-                    fts_text=fts_text
+                    ai_summary=summary_text,
+                    tags_text=tags_text,
+                    body_text=body_text,
+                    fts_base_text=fts_text
                 )
                 print(f"[Migration] Page {idx+1}/{len(pages)} migrated.")
             except Exception as e:
@@ -1116,21 +1130,15 @@ async def migrate_existing_data_to_v2():
             body_text = f"本文: {att['extracted_text'] or ''}"
             
             try:
-                summary_vector, tags_vector, body_vector = await asyncio.gather(
-                    ai_agent.generate_embedding_via_azure(summary_text, dimensions=512),
-                    ai_agent.generate_embedding_via_azure(tags_text, dimensions=512),
-                    ai_agent.generate_embedding_via_azure(body_text, dimensions=512)
-                )
-                
                 fts_text = f"{att.get('title', '')}\n\n{att.get('page_name') or ''}\n\n{att.get('file_name', '')}\n\n{att.get('extracted_text') or ''}"
                 
-                lance_client.upsert_vector_data(
-                    page_id=att_id,
+                await register_document_vectors(
+                    source_id=att_id,
                     note_id=note_id,
-                    summary_vector=summary_vector,
-                    tags_vector=tags_vector,
-                    body_vector=body_vector,
-                    fts_text=fts_text
+                    ai_summary=summary_text,
+                    tags_text=tags_text,
+                    body_text=body_text,
+                    fts_base_text=fts_text
                 )
                 print(f"[Migration] Attachment {idx+1}/{len(attachments)} migrated.")
             except Exception as e:

@@ -5,7 +5,7 @@ import config
 
 _db = None
 _table = None
-TABLE_NAME = "knowledge_vector_table_v2"
+TABLE_NAME = "knowledge_vector_table_v3"
 
 def reset_connection():
     global _db, _table
@@ -21,8 +21,10 @@ def get_table():
         else:
             # 512次元のマルチベクトルスキーマ定義 (Azure OpenAI text-embedding-3-small 512)
             schema = pa.schema([
-                pa.field("id", pa.string()),        # page_id として使用
-                pa.field("note_id", pa.string()),   # 親ノートのID
+                pa.field("id", pa.string()),          # chunk_id として使用
+                pa.field("source_id", pa.string()),   # 親の page_id または attachment_id
+                pa.field("note_id", pa.string()),     # 親ノートのID
+                pa.field("chunk_index", pa.int32()),  # チャンクのインデックス
                 pa.field("summary_vector", pa.list_(pa.float32(), 512)),
                 pa.field("tags_vector", pa.list_(pa.float32(), 512)),
                 pa.field("body_vector", pa.list_(pa.float32(), 512)),
@@ -31,20 +33,24 @@ def get_table():
             _table = _db.create_table(TABLE_NAME, schema=schema)
     return _table
 
-def upsert_vector_data(page_id: str, note_id: str, summary_vector: list[float], tags_vector: list[float], body_vector: list[float], fts_text: str):
+def upsert_vector_data_chunks(source_id: str, note_id: str, chunks_data: list[dict]):
     table = get_table()
-    data = [{
-        "id": page_id,
-        "note_id": note_id,
-        "summary_vector": summary_vector,
-        "tags_vector": tags_vector,
-        "body_vector": body_vector,
-        "fts_text": fts_text
-    }]
+    data = []
+    for chunk in chunks_data:
+        data.append({
+            "id": f"{source_id}_{chunk['chunk_index']}",
+            "source_id": source_id,
+            "note_id": note_id,
+            "chunk_index": chunk["chunk_index"],
+            "summary_vector": chunk["summary_vector"],
+            "tags_vector": chunk["tags_vector"],
+            "body_vector": chunk["body_vector"],
+            "fts_text": chunk["fts_text"]
+        })
     
     # 既存データを削除して再登録 (重複排除)
     try:
-        table.delete(f"id = '{page_id}'")
+        table.delete(f"source_id = '{source_id}'")
     except Exception as e:
         print(f"No existing record to delete or delete failed: {e}")
         
@@ -56,17 +62,17 @@ def upsert_vector_data(page_id: str, note_id: str, summary_vector: list[float], 
     except Exception as e:
         print(f"Warning: Failed to create FTS index: {e}. Keyword search will fallback to memory matching.")
 
-def delete_vector_data(page_id: str):
+def delete_vector_data(source_id: str):
     table = get_table()
     try:
-        table.delete(f"id = '{page_id}'")
+        table.delete(f"source_id = '{source_id}'")
         # インデックス再構築
         try:
             table.create_fts_index("fts_text", replace=True)
         except Exception:
             pass
     except Exception as e:
-        print(f"Error deleting vector data for page_id {page_id}: {e}")
+        print(f"Error deleting vector data for source_id {source_id}: {e}")
 
 def delete_all_vector_data_for_note(note_id: str):
     table = get_table()
@@ -81,32 +87,14 @@ def delete_all_vector_data_for_note(note_id: str):
 
 def migrate_to_v5(mappings: list[dict]):
     """
-    スキーマv5への移行ロジック。
-    旧テーブル（スキーマ: vector/search_text/ocr_text）と現行テーブル（スキーマ: summary_vector/tags_vector/body_vector/fts_text）は
-    カラム構成が完全に異なるため、旧データをそのまま挿入するとデータ破壊が発生する。
-    そのため、テーブルのドロップ＆空テーブルの再作成のみを行い、データ再投入は起動時に実行される
-    migrate_existing_data_to_v2()（workflow.py）に委任する。
-    migrate_existing_data_to_v2() はテーブルが空のとき SQLite から全データを再インデックスするため、
-    データは安全に復元される。
+    [廃止済み / DEPRECATED]
+    このSQLite DBマイグレーション(v5)は、LanceDBテーブルの再作成を担うものでしたが、
+    現在のテーブル名は knowledge_vector_table_v3 であり、v5マイグレーションは
+    DB version=10 の現環境では絶対に呼ばれません。
+    万が一誤呼出しが起きた場合に v3 テーブルを破壊しないよう、処理を完全に無効化しています。
     """
-    global _db, _table
-    if _db is None:
-        _db = lancedb.connect(config.LANCEDB_DIR)
-
-    # テーブルが存在しない場合は何もしない
-    if TABLE_NAME not in _db.table_names():
-        print(f"[migrate_to_v5] Table '{TABLE_NAME}' does not exist. Skipping drop.")
-        return
-
-    # 旧テーブルをドロップ（スキーマ不一致のデータ挿入を防ぐ）
-    _db.drop_table(TABLE_NAME)
-    _table = None
-    print(f"[migrate_to_v5] Dropped old table '{TABLE_NAME}'.")
-
-    # 新スキーマでテーブルを再作成（空テーブル）
-    get_table()
-    print(f"[migrate_to_v5] Recreated empty table '{TABLE_NAME}' with new schema (multi-vector 512d).")
-    print("[migrate_to_v5] Re-indexing will be handled by migrate_existing_data_to_v2() on startup.")
+    print("[migrate_to_v5] WARNING: This deprecated migration function was called unexpectedly. Skipping to prevent data loss.")
+    return
 
 
 def hybrid_search(query_vector: list[float], query_text: str, limit: int = 5, distance_threshold: float = 0.7) -> list[dict]:
@@ -173,23 +161,25 @@ def hybrid_search(query_vector: list[float], query_text: str, limit: int = 5, di
     # 各検索結果の順位を反映
     def add_rankings(results):
         for rank, item in enumerate(results, start=1):
-            note_id = item["id"]
-            if note_id not in rrf_scores:
-                rrf_scores[note_id] = {"item": item, "score": 0.0}
-            rrf_scores[note_id]["score"] += 1.0 / (k + rank)
+            source_id = item.get("source_id") or item["id"]  # v3 schema uses source_id
+            if source_id not in rrf_scores:
+                rrf_scores[source_id] = {"item": item, "score": 0.0}
+            rrf_scores[source_id]["score"] += 1.0 / (k + rank)
             
     add_rankings(summary_results)
     add_rankings(tags_results)
     add_rankings(body_results)
     add_rankings(fts_results)
         
-    # note_id でグループ化して重複排除 (同一ノートの複数ページ対応)
+    # note_id でグループ化して重複排除:
+    # 検索結果はUI上「ノート」単位で表示されるため、同一ノートの複数ページ・複数チャンクが
+    # ヒットした場合は、最もスコアの高い1件（最関連ページ）のみを代表として採用する。
     grouped_by_note = {}
     for entry in rrf_scores.values():
         note_id = entry["item"].get("note_id", "")
         if not note_id:
             continue
-        # 最もスコアの高いページを採用
+        # 最もスコアの高いページ（チャンク）を採用
         if note_id not in grouped_by_note or entry["score"] > grouped_by_note[note_id]["score"]:
             grouped_by_note[note_id] = entry
 
@@ -201,7 +191,7 @@ def hybrid_search(query_vector: list[float], query_text: str, limit: int = 5, di
     for entry in sorted_results[:limit]:
         item = entry["item"]
         final_results.append({
-            "id": item["id"],  # page_id
+            "id": item.get("source_id") or item["id"],  # page_id として返す
             "note_id": item.get("note_id", ""),  # 親ノートID
             "fts_text": item.get("fts_text", ""),
             "search_text": item.get("fts_text", ""), # 互換性のためのエイリアス
