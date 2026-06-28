@@ -31,7 +31,7 @@ try {{
 $filePath = "{file_path}"
 $outputDir = "{output_dir}"
 
-[ref]$objectId = ""
+$objectId = ""
 
 try {{
     if ($filePath.ToLower().EndsWith(".onepkg")) {{
@@ -46,10 +46,21 @@ try {{
     exit 1
 }}
 
-[ref]$xmlOut = ""
-$onenote.GetHierarchy($objectId.Value, 2, $xmlOut)
+if (-not $objectId) {{
+    Write-Error "Failed to get a valid Object ID from OneNote."
+    exit 1
+}}
 
-[xml]$doc = $xmlOut.Value
+$xmlOut = ""
+try {{
+    # HierarchyScope 4 = hsPages
+    $onenote.GetHierarchy($objectId, 4, [ref]$xmlOut)
+}} catch {{
+    Write-Error "Failed to get hierarchy: $($_.Exception.Message)"
+    exit 1
+}}
+
+[xml]$doc = $xmlOut
 $ns = New-Object System.Xml.XmlNamespaceManager($doc.NameTable)
 $ns.AddNamespace("one", "http://schemas.microsoft.com/office/onenote/2013/onenote")
 
@@ -65,7 +76,7 @@ foreach ($page in $pages) {{
     $pdfPath = Join-Path $outputDir "$guid.pdf"
     
     try {{
-        # 2 = pfPDF
+        # PublishFormat 2 = pfPDF
         $onenote.Publish($pageId, $pdfPath, 2, "")
         Write-Output $pdfPath
     }} catch {{
@@ -74,7 +85,7 @@ foreach ($page in $pages) {{
 }}
 
 try {{
-    $onenote.CloseNotebook($objectId.Value)
+    $onenote.CloseNotebook($objectId)
 }} catch {{}}
 """
 
