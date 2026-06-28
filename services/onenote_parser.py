@@ -37,9 +37,9 @@ try {{
     if ($filePath.ToLower().EndsWith(".onepkg")) {{
         $destPath = Join-Path $outputDir "Package"
         New-Item -ItemType Directory -Force -Path $destPath | Out-Null
-        $onenote.OpenPackage($filePath, $destPath, $objectId)
+        $onenote.OpenPackage($filePath, $destPath, [ref]$objectId)
     }} else {{
-        $onenote.OpenHierarchy($filePath, "", $objectId, 0)
+        $onenote.OpenHierarchy($filePath, "", [ref]$objectId, 0)
     }}
 }} catch {{
     Write-Error "Failed to open OneNote file: $($_.Exception.Message)"
@@ -84,16 +84,22 @@ try {{
 
     result = subprocess.run(
         ["powershell", "-ExecutionPolicy", "Bypass", "-File", ps1_path],
-        capture_output=True,
-        text=True,
-        encoding="utf-8"
+        capture_output=True
     )
 
+    # デコード処理 (Shift-JIS/cp932環境でもエラーにならないように)
+    try:
+        stdout_str = result.stdout.decode("utf-8")
+        stderr_str = result.stderr.decode("utf-8")
+    except UnicodeDecodeError:
+        stdout_str = result.stdout.decode("cp932", errors="replace")
+        stderr_str = result.stderr.decode("cp932", errors="replace")
+
     if result.returncode != 0:
-        raise RuntimeError(f"PowerShell extraction failed: {result.stderr}\nOutput: {result.stdout}")
+        raise RuntimeError(f"PowerShell extraction failed: {stderr_str}\nOutput: {stdout_str}")
 
     pdf_paths = []
-    for line in result.stdout.strip().splitlines():
+    for line in stdout_str.strip().splitlines():
         line = line.strip()
         if line.lower().endswith(".pdf") and os.path.exists(line):
             pdf_paths.append(line)
