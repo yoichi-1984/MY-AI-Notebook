@@ -1214,4 +1214,58 @@ async def process_queued_jobs():
             print(f"[Queue Processor] Job {job_id} ({job_type}) failed with error: {e}")
             sqlite_client.update_api_job_status(job_id, "failed", str(e))
 
+async def process_onenote_import(file_path: str, filename: str, parent_folder_id: str):
+    """
+    OneNoteファイルのインポート処理。
+    COM経由でページ単位のPDFに分割し、それぞれを新規ノートとして取り込む。
+    """
+    from services.onenote_parser import extract_onenote_pages_as_pdfs
+    import uuid
+    import asyncio
+    import os
+
+    try:
+        # PDFに分割
+        pdf_paths = await asyncio.to_thread(extract_onenote_pages_as_pdfs, file_path)
+        
+        if not pdf_paths:
+            print("No pages extracted from OneNote.")
+            return
+
+        for idx, pdf_path in enumerate(pdf_paths):
+            note_id = str(uuid.uuid4())
+            # create_note() expects title and raw_text
+            # We'll use a placeholder title and empty text, which will be updated by process_document_import_workflow
+            from database import sqlite_client
+            # Determine folder ID (if inbox, it will be auto-routed by process_document_import_workflow later if configured)
+            page_title = f"{filename} - Page {idx+1}"
+            sqlite_client.create_note(
+                note_id=note_id,
+                parent_folder_id=parent_folder_id,
+                title=page_title,
+                raw_text=""
+            )
+            
+            # PDFファイル名を作成 (元のファイル名 + ページ番号)
+            pdf_filename = f"{os.path.splitext(filename)[0]}_page_{idx+1}.pdf"
+            
+            # PDFのインポートワークフローを実行
+            await process_document_import_workflow(note_id, pdf_path, pdf_filename)
+            
+            # クリーンアップ (処理後のPDF)
+            try:
+                os.remove(pdf_path)
+            except Exception as e:
+                print(f"Failed to remove temp PDF {pdf_path}: {e}")
+
+    except Exception as e:
+        print(f"Error in OneNote import workflow: {e}")
+    finally:
+        # クリーンアップ (元のアップロードファイル)
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"Failed to clean up OneNote temp file {file_path}: {e}")
+
 

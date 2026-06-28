@@ -264,6 +264,51 @@ async def import_note(
 
     return {"status": "processing", "note_id": note_id}
 
+@app.post("/api/notes/import/onenote", status_code=status.HTTP_202_ACCEPTED)
+async def import_onenote(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    folder_id: str = Form("inbox"),
+    new_folder_name: Optional[str] = Form(None)
+):
+    filename = file.filename
+    ext = os.path.splitext(filename)[1].lower()
+    
+    if ext not in ['.one', '.onepkg']:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported format. Only .one and .onepkg are supported."
+        )
+
+    # フォルダの確認・作成
+    if folder_id == "new" and new_folder_name:
+        folder_id = sqlite_client.create_folder(new_folder_name.strip(), parent_id=None)
+    elif folder_id != "inbox":
+        folders = sqlite_client.get_folders()
+        if not any(f["id"] == folder_id for f in folders):
+            raise HTTPException(status_code=404, detail="フォルダが見つかりません。")
+
+    # 一時ファイルの作成
+    note_id = str(uuid.uuid4())
+    temp_dir = os.path.join(config.BASE_DIR, "temp_import")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_file_path = os.path.abspath(os.path.join(temp_dir, f"onenote_{note_id}{ext}"))
+
+    # ファイルの保存
+    async with aiofiles.open(temp_file_path, "wb") as buffer:
+        while chunk := await file.read(1024 * 1024):
+            await buffer.write(chunk)
+
+    # バックグラウンド処理のキック
+    background_tasks.add_task(
+        workflow.process_onenote_import,
+        file_path=temp_file_path,
+        filename=filename,
+        parent_folder_id=folder_id
+    )
+
+    return {"status": "processing", "message": "OneNote file is being processed"}
+
 # 2. フォルダ一覧取得
 @app.get("/api/folders")
 def get_folders():

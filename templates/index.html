@@ -577,6 +577,54 @@
                             正式なDBへ同期する
                         </button>
                     </div>
+                    <!-- OneNote Import セクション -->
+                    <div class="p-5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 space-y-4">
+                        <h3 class="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center">
+                            <i data-lucide="book-open" class="w-4 h-4 mr-1.5 text-brand-600 dark:text-brand-400"></i> OneNote インポート
+                        </h3>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 mb-4">
+                            .one または .onepkg ファイルを読み込み、ページ単位で自動的にPDF化してアプリに取り込みます。
+                        </p>
+                        
+                        <div class="space-y-4">
+                            <!-- シングルファイルインポート -->
+                            <div class="p-4 bg-white dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700">
+                                <h4 class="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">個別ファイル読込</h4>
+                                <div class="flex flex-col space-y-3">
+                                    <input type="file" id="onenoteSingleFile" accept=".one,.onepkg" class="text-sm text-slate-600 dark:text-slate-400">
+                                    
+                                    <div>
+                                        <label class="text-[10px] uppercase text-slate-500 block mb-1">追加先プロジェクト</label>
+                                        <select id="onenoteSingleFolder" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded text-sm px-2 py-1.5 text-slate-800 dark:text-slate-200">
+                                            <option value="inbox">自動 (AI判定)</option>
+                                            <option value="new">-- 新規プロジェクト作成 --</option>
+                                            <!-- JSで既存フォルダ一覧を動的に追加 -->
+                                        </select>
+                                    </div>
+                                    <div id="onenoteNewFolderDiv" class="hidden">
+                                        <input type="text" id="onenoteNewFolderName" placeholder="新規プロジェクト名" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded text-sm px-2 py-1.5 text-slate-800 dark:text-slate-200">
+                                    </div>
+                                    
+                                    <button onclick="importOneNoteSingle()" class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors">
+                                        インポート開始
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <!-- フォルダ一括インポート -->
+                            <div class="p-4 bg-white dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700">
+                                <h4 class="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">フォルダ一括読込 (自動振り分け)</h4>
+                                <p class="text-[10px] text-slate-500 mb-3">選択したフォルダ内の全 .one / .onepkg を自動抽出し、AI判定キューに追加します。</p>
+                                <div class="flex flex-col space-y-3">
+                                    <input type="file" id="onenoteBatchFolder" webkitdirectory directory class="text-sm text-slate-600 dark:text-slate-400">
+                                    
+                                    <button onclick="importOneNoteBatch()" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold rounded-lg transition-colors">
+                                        一括インポート開始
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
                     <!-- データ保存先設定セクション -->
                     <div class="p-5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 space-y-4">
@@ -770,6 +818,7 @@
             dropZone.classList.add('hidden');
             searchView.classList.add('hidden');
             document.getElementById('settingsView').classList.remove('hidden');
+            populateOneNoteFolders();
         }
 
         // 設定画面を閉じる
@@ -2593,6 +2642,145 @@
             } catch (err) {
                 console.error("Failed to fetch settings:", err);
             }
+        }
+
+        // OneNote インポート関連
+        function populateOneNoteFolders() {
+            const select = document.getElementById('onenoteSingleFolder');
+            // Remove existing folder options (keep inbox and new)
+            Array.from(select.options).forEach(opt => {
+                if (opt.value !== 'inbox' && opt.value !== 'new') {
+                    select.removeChild(opt);
+                }
+            });
+            
+            // Add folders
+            folders.forEach(f => {
+                if (f.id !== 'inbox') {
+                    const opt = document.createElement('option');
+                    opt.value = f.id;
+                    opt.textContent = f.name;
+                    select.appendChild(opt);
+                }
+            });
+            
+            // Handle folder selection change
+            select.onchange = (e) => {
+                const newFolderDiv = document.getElementById('onenoteNewFolderDiv');
+                if (e.target.value === 'new') {
+                    newFolderDiv.classList.remove('hidden');
+                } else {
+                    newFolderDiv.classList.add('hidden');
+                }
+            };
+        }
+
+        async function importOneNoteSingle() {
+            const fileInput = document.getElementById('onenoteSingleFile');
+            const folderSelect = document.getElementById('onenoteSingleFolder');
+            const newFolderNameInput = document.getElementById('onenoteNewFolderName');
+            
+            if (!fileInput.files.length) {
+                showToast("ファイルを選択してください", "error");
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            const folderId = folderSelect.value;
+            const newFolderName = newFolderNameInput.value;
+            
+            if (folderId === 'new' && !newFolderName.trim()) {
+                showToast("新規プロジェクト名を入力してください", "error");
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("folder_id", folderId);
+            if (folderId === 'new') {
+                formData.append("new_folder_name", newFolderName);
+            }
+            
+            showToast("インポート要求を送信中...", "info");
+            try {
+                const res = await fetch('/api/notes/import/onenote', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (res.ok) {
+                    showToast("OneNoteインポート処理を開始しました。PDF分割とAI処理がバックグラウンドで実行されます。処理中はお待ちください。", "success");
+                    fileInput.value = "";
+                    newFolderNameInput.value = "";
+                    folderSelect.value = "inbox";
+                    document.getElementById('onenoteNewFolderDiv').classList.add('hidden');
+                    closeSettingsView();
+                } else {
+                    const err = await res.json();
+                    showToast("エラー: " + (err.detail || "不明なエラー"), "error");
+                }
+            } catch (e) {
+                showToast("通信エラーが発生しました", "error");
+            }
+        }
+
+        async function importOneNoteBatch() {
+            const fileInput = document.getElementById('onenoteBatchFolder');
+            
+            if (!fileInput.files.length) {
+                showToast("フォルダを選択してください", "error");
+                return;
+            }
+            
+            // フィルタリング
+            const onenoteFiles = Array.from(fileInput.files).filter(f => {
+                const name = f.name.toLowerCase();
+                return name.endsWith('.one') || name.endsWith('.onepkg');
+            });
+            
+            if (onenoteFiles.length === 0) {
+                showToast("選択したフォルダに .one または .onepkg ファイルが見つかりませんでした", "error");
+                return;
+            }
+            
+            if (!confirm(`合計 ${onenoteFiles.length} 件のOneNoteファイルが見つかりました。\n\nすべて自動判定キューに送信してよろしいですか？\n（バックグラウンドで順次PDF化され、自動振り分けされます）`)) {
+                return;
+            }
+            
+            showToast("バッチ処理を開始します...", "info");
+            closeSettingsView();
+            
+            let successCount = 0;
+            let errorCount = 0;
+            
+            for (let i = 0; i < onenoteFiles.length; i++) {
+                const file = onenoteFiles[i];
+                showToast(`送信中 (${i+1}/${onenoteFiles.length}): ${file.name}`, "info");
+                
+                const formData = new FormData();
+                formData.append("file", file);
+                formData.append("folder_id", "inbox"); // Auto
+                
+                try {
+                    const res = await fetch('/api/notes/import/onenote', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    if (res.ok) {
+                        successCount++;
+                    } else {
+                        errorCount++;
+                    }
+                } catch (e) {
+                    errorCount++;
+                }
+                
+                // 少しだけ待機（サーバ負荷軽減）
+                await new Promise(r => setTimeout(r, 500));
+            }
+            
+            showToast(`バッチ送信完了！ 成功: ${successCount}件, 失敗: ${errorCount}件。\nこれらはバックグラウンドで順次処理されます。`, "success");
+            fileInput.value = "";
         }
 
         // 設定の保存
