@@ -1,10 +1,12 @@
 import os
 import lancedb
 import pyarrow as pa
+import threading
 import config
 
 _db = None
 _table = None
+_db_lock = threading.Lock()
 TABLE_NAME = "knowledge_vector_table_v3"
 
 def reset_connection():
@@ -15,22 +17,24 @@ def reset_connection():
 def get_table():
     global _db, _table
     if _table is None:
-        _db = lancedb.connect(config.LANCEDB_DIR)
-        if TABLE_NAME in _db.table_names():
-            _table = _db.open_table(TABLE_NAME)
-        else:
-            # 512次元のマルチベクトルスキーマ定義 (Azure OpenAI text-embedding-3-small 512)
-            schema = pa.schema([
-                pa.field("id", pa.string()),          # chunk_id として使用
-                pa.field("source_id", pa.string()),   # 親の page_id または attachment_id
-                pa.field("note_id", pa.string()),     # 親ノートのID
-                pa.field("chunk_index", pa.int32()),  # チャンクのインデックス
-                pa.field("summary_vector", pa.list_(pa.float32(), 512)),
-                pa.field("tags_vector", pa.list_(pa.float32(), 512)),
-                pa.field("body_vector", pa.list_(pa.float32(), 512)),
-                pa.field("fts_text", pa.string())
-            ])
-            _table = _db.create_table(TABLE_NAME, schema=schema)
+        with _db_lock:
+            if _table is None:
+                _db = lancedb.connect(config.LANCEDB_DIR)
+                if TABLE_NAME in _db.table_names():
+                    _table = _db.open_table(TABLE_NAME)
+                else:
+                    # 512次元のマルチベクトルスキーマ定義 (Azure OpenAI text-embedding-3-small 512)
+                    schema = pa.schema([
+                        pa.field("id", pa.string()),          # chunk_id として使用
+                        pa.field("source_id", pa.string()),   # 親の page_id または attachment_id
+                        pa.field("note_id", pa.string()),     # 親ノートのID
+                        pa.field("chunk_index", pa.int32()),  # チャンクのインデックス
+                        pa.field("summary_vector", pa.list_(pa.float32(), 512)),
+                        pa.field("tags_vector", pa.list_(pa.float32(), 512)),
+                        pa.field("body_vector", pa.list_(pa.float32(), 512)),
+                        pa.field("fts_text", pa.string())
+                    ])
+                    _table = _db.create_table(TABLE_NAME, schema=schema)
     return _table
 
 def upsert_vector_data_chunks(source_id: str, note_id: str, chunks_data: list[dict]):
@@ -48,42 +52,45 @@ def upsert_vector_data_chunks(source_id: str, note_id: str, chunks_data: list[di
             "fts_text": chunk["fts_text"]
         })
     
-    # 既存データを削除して再登録 (重複排除)
-    try:
-        table.delete(f"source_id = '{source_id}'")
-    except Exception as e:
-        print(f"No existing record to delete or delete failed: {e}")
+    with _db_lock:
+        # 既存データを削除して再登録 (重複排除)
+        try:
+            table.delete(f"source_id = '{source_id}'")
+        except Exception as e:
+            print(f"No existing record to delete or delete failed: {e}")
+            
+        table.add(data)
         
-    table.add(data)
-    
-    # 全文検索 (FTS) インデックスの再構築
-    try:
-        table.create_fts_index("fts_text", replace=True)
-    except Exception as e:
-        print(f"Warning: Failed to create FTS index: {e}. Keyword search will fallback to memory matching.")
+        # 全文検索 (FTS) インデックスの再構築
+        try:
+            table.create_fts_index("fts_text", replace=True)
+        except Exception as e:
+            print(f"Warning: Failed to create FTS index: {e}. Keyword search will fallback to memory matching.")
 
 def delete_vector_data(source_id: str):
     table = get_table()
-    try:
-        table.delete(f"source_id = '{source_id}'")
-        # インデックス再構築
+    with _db_lock:
         try:
-            table.create_fts_index("fts_text", replace=True)
-        except Exception:
-            pass
-    except Exception as e:
-        print(f"Error deleting vector data for source_id {source_id}: {e}")
+            table.delete(f"source_id = '{source_id}'")
+            # インデックス再構築
+            try:
+                table.create_fts_index("fts_text", replace=True)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Error deleting vector data for source_id {source_id}: {e}")
 
 def delete_all_vector_data_for_note(note_id: str):
     table = get_table()
-    try:
-        table.delete(f"note_id = '{note_id}'")
+    with _db_lock:
         try:
-            table.create_fts_index("fts_text", replace=True)
-        except Exception:
-            pass
-    except Exception as e:
-        print(f"Error deleting all vector data for note_id {note_id}: {e}")
+            table.delete(f"note_id = '{note_id}'")
+            try:
+                table.create_fts_index("fts_text", replace=True)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Error deleting all vector data for note_id {note_id}: {e}")
 
 def migrate_to_v5(mappings: list[dict]):
     """
