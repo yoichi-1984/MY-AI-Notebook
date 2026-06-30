@@ -803,7 +803,7 @@ async def process_document_import_workflow(note_id: str, file_path: str, filenam
                 tags_text = f"タグ: {ai_tags}"
                 body_text = f"本文: {raw_text or ''}"
                 
-                fts_text = f"{note.get('title') or ''}\n\n{target_page.get('page_name') or ''}\n\n{raw_text or ''}\n\n{ocr_text or ''}"
+                fts_text = f"{note.get('title') or ''}\n\n{page_name or ''}\n\n{raw_text or ''}\n\n{ocr_text or ''}"
                 
                 await register_document_vectors(
                     source_id=page_id,
@@ -1216,56 +1216,253 @@ async def process_queued_jobs():
 
 async def process_onenote_import(file_path: str, filename: str, parent_folder_id: str):
     """
-    OneNoteファイルのインポート処理。
-    COM経由でページ単位のPDFに分割し、それぞれを新規ノートとして取り込む。
+    OneNoteのインポート処理（PDFを使わず、XMLからネイティブにテキスト・画像・添付ファイルを抽出）
     """
-    from services.onenote_parser import extract_onenote_pages_as_pdfs
+    from services.onenote_parser import extract_onenote_pages_native
     import uuid
     import asyncio
     import os
+    import shutil
+    from collections import defaultdict
+    from database import sqlite_client
+    from services import ai_agent
+    from services.workflow import broadcast_ws_message, register_document_vectors, process_attachment_ai_workflow
+    import config
 
     try:
-        # PDFに分割
-        pdf_paths = await asyncio.to_thread(extract_onenote_pages_as_pdfs, file_path)
+        pages_data = await asyncio.to_thread(extract_onenote_pages_native, file_path)
         
-        if not pdf_paths:
+        if not pages_data:
             print("No pages extracted from OneNote.")
             return
 
-        for idx, pdf_path in enumerate(pdf_paths):
+        base_title = os.path.splitext(filename)[0]
+        
+        if parent_folder_id == "inbox":
+            target_folder_id = sqlite_client.create_folder(base_title, parent_id=None)
+            await broadcast_ws_message({"type": "folder_created", "folder_id": target_folder_id})
+        else:
+            target_folder_id = parent_folder_id
+
+        temp_dir = pages_data[0].get("_temp_dir") if pages_data else None
+        
+        total_pages = len(pages_data)
+        
+        # Group by section
+        sections = defaultdict(list)
+        for page in pages_data:
+            sec_name = page.get("sectionName") or "Unknown Section"
+            sections[sec_name].append(page)
+        
+        recent_titles = sqlite_client.get_recent_titles(limit=100)
+        existing_titles_str = ", ".join(recent_titles) if recent_titles else "(ありません)"
+        
+        global_page_idx = 0
+
+        for section_name, section_pages in sections.items():
             note_id = str(uuid.uuid4())
-            # create_note() expects title and raw_text
-            # We'll use a placeholder title and empty text, which will be updated by process_document_import_workflow
-            from database import sqlite_client
-            # Determine folder ID (if inbox, it will be auto-routed by process_document_import_workflow later if configured)
-            page_title = f"{filename} - Page {idx+1}"
+            
             sqlite_client.create_note(
                 note_id=note_id,
-                parent_folder_id=parent_folder_id,
-                title=page_title,
+                parent_folder_id=target_folder_id,
                 raw_text=""
             )
             
-            # PDFファイル名を作成 (元のファイル名 + ページ番号)
-            pdf_filename = f"{os.path.splitext(filename)[0]}_page_{idx+1}.pdf"
+            # create_noteによって自動生成される空の「ページ1」を削除する
+            created_note = sqlite_client.get_note(note_id)
+            if created_note and "pages" in created_note and len(created_note["pages"]) > 0:
+                sqlite_client.delete_page(created_note["pages"][0]["id"])
             
-            # PDFのインポートワークフローを実行
-            await process_document_import_workflow(note_id, pdf_path, pdf_filename)
+            await broadcast_ws_message({
+                "type": "import_progress",
+                "note_id": note_id,
+                "current": global_page_idx,
+                "total": total_pages,
+                "message": f"セクション「{section_name}」の解析を開始します..."
+            })
             
-            # クリーンアップ (処理後のPDF)
-            try:
-                os.remove(pdf_path)
-            except Exception as e:
-                print(f"Failed to remove temp PDF {pdf_path}: {e}")
+            page_summaries = []
+            page_tags_all = set()
+            
+            for page in section_pages:
+                global_page_idx += 1
+                page_name = page.get("pageName") or f"Page {global_page_idx}"
+                raw_text = page.get("text") or ""
+                
+                page_id = sqlite_client.create_page(note_id, page_name)
+                
+                # 画像の登録とOCR
+                images = page.get("images", [])
+                for img_path in images:
+                    if os.path.exists(img_path):
+                        img_filename = f"{uuid.uuid4()}{os.path.splitext(img_path)[1]}"
+                        full_dest_path = os.path.join(config.IMAGE_DIR, img_filename)
+                        shutil.copy2(img_path, full_dest_path)
+                        img_path_web = f"local_images/{img_filename}"
+                        img_id = sqlite_client.add_page_image(note_id, page_id, img_path_web)
+                        
+                        try:
+                            with open(full_dest_path, "rb") as f_img:
+                                img_bytes = f_img.read()
+                            ocr_text = await asyncio.to_thread(ai_agent.ocr_image_with_gemini, img_bytes)
+                            if ocr_text:
+                                sqlite_client.update_note_image_ocr(img_id, ocr_text)
+                                raw_text += f"\n\n[画像OCR]: {ocr_text}"
+                        except Exception as e:
+                            print(f"Warning: Failed to OCR image {img_filename}: {e}")
+                        
+                # 添付ファイルの登録とAI処理
+                attachments = page.get("attachments", [])
+                for att_path in attachments:
+                    if os.path.exists(att_path):
+                        att_filename = f"{uuid.uuid4()}_{os.path.basename(att_path)}"
+                        full_dest_path = os.path.join(config.ATTACHMENT_DIR, att_filename)
+                        shutil.copy2(att_path, full_dest_path)
+                        att_path_web = f"local_attachments/{att_filename}"
+                        file_size = os.path.getsize(full_dest_path)
+                        try:
+                            att_id = sqlite_client.add_page_attachment(
+                                note_id=note_id, 
+                                page_id=page_id, 
+                                file_path=att_path_web, 
+                                file_name=os.path.basename(att_path), 
+                                file_size=file_size, 
+                                mime_type="application/octet-stream"
+                            )
+                            # バックグラウンドタスクとしてAI要約・OCRを実行
+                            # 直接awaitするかタスクを投げるか
+                            await process_attachment_ai_workflow(att_id)
+                        except Exception as e:
+                            print(f"Warning: Failed to process attachment {att_filename}: {e}")
+                
+                # 要約とタグの生成
+                ai_summary = ""
+                ai_tags = ""
+                if raw_text.strip():
+                    summary_data = await asyncio.to_thread(
+                        ai_agent.generate_summary_and_tags_with_gemini,
+                        raw_text=raw_text,
+                        merged_ocr_text="",
+                        existing_titles_string=existing_titles_str
+                    )
+                    ai_summary = summary_data.clean_summary
+                    ai_tags = ",".join(summary_data.tags)
+                    page_summaries.append(ai_summary)
+                    for t in summary_data.tags:
+                        page_tags_all.add(t)
+                
+                sqlite_client.update_page_metadata(
+                    page_id=page_id,
+                    page_name=page_name,
+                    raw_text=raw_text,
+                    reference_urls="",
+                    ai_summary=ai_summary,
+                    ai_tags=ai_tags,
+                    ai_ocr_text=None
+                )
+                
+                summary_text = f"要約: {ai_summary}"
+                tags_text = f"タグ: {ai_tags}"
+                body_text = f"本文: {raw_text}"
+                fts_text = f"{section_name}\n\n{page_name}\n\n{raw_text}"
+                
+                await register_document_vectors(
+                    source_id=page_id,
+                    note_id=note_id,
+                    ai_summary=summary_text,
+                    tags_text=tags_text,
+                    body_text=body_text,
+                    fts_base_text=fts_text
+                )
+                
+                await broadcast_ws_message({
+                    "type": "import_progress",
+                    "note_id": note_id,
+                    "current": global_page_idx,
+                    "total": total_pages,
+                    "message": f"ページ {global_page_idx}/{total_pages} を処理中..."
+                })
+
+            all_summaries_text = "\n".join(page_summaries)
+            if all_summaries_text:
+                overall_summary_prompt = f"""
+                以下はセクション「{section_name}」の各ページから抽出された要約のリストです。
+                これを元に、セクション全体の内容がわかるように3行程度の概要本文で作成してください。
+                
+                【各ページの要約】
+                {all_summaries_text}
+                """
+                try:
+                    overall_response = await asyncio.to_thread(
+                        ai_agent.generate_content_with_fallback,
+                        contents=overall_summary_prompt
+                    )
+                    overall_summary = overall_response.text
+                except Exception as e:
+                    overall_summary = "\n".join(page_summaries[:3])
+            else:
+                overall_summary = "テキストコンテンツがないため要約を生成できませんでした。"
+
+            # Noteの本文(raw_text)は空にして、Page1の結合テキストを廃止
+            # sqlite_client.update_note_content(note_id, "")  # 最初のページを上書きしてしまうため削除
+            
+            sqlite_client.update_note_metadata(
+                note_id=note_id,
+                title=section_name,
+                ai_ocr_text="",
+                ai_summary=overall_summary,
+                ai_tags=",".join(page_tags_all),
+                parent_folder_id=target_folder_id,
+                status="completed",
+                reference_urls=""
+            )
+            
+            fts_text = f"{section_name}\n\n{overall_summary}"
+            await register_document_vectors(
+                source_id=note_id,
+                note_id=note_id,
+                ai_summary=f"全体要約: {overall_summary}",
+                tags_text=f"全体タグ: {','.join(page_tags_all)}",
+                body_text="",
+                fts_base_text=fts_text
+            )
+
+            await broadcast_ws_message({
+                "type": "completed",
+                "note_id": note_id,
+                "page_id": None,
+                "title": section_name,
+                "folder_id": target_folder_id,
+                "message": f"セクション「{section_name}」の処理が完了しました！"
+            })
+
+            if config.APP_STATE == "offline":
+                await broadcast_ws_message({
+                    "type": "offline_queued",
+                    "note_id": note_id,
+                    "page_id": None,
+                    "title": "オフライン待ちのノート",
+                    "folder_id": target_folder_id,
+                    "message": "オフラインのため、接続後に再開します。"
+                })
 
     except Exception as e:
-        print(f"Error in OneNote import workflow: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await broadcast_ws_message({
+                "type": "failed",
+                "note_id": "unknown",
+                "title": filename,
+                "error": str(e)
+            })
+        except:
+            pass
     finally:
-        # クリーンアップ (元のアップロードファイル)
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
+            if 'temp_dir' in locals() and temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
         except Exception as e:
-            print(f"Failed to clean up OneNote temp file {file_path}: {e}")
-
-
+            pass

@@ -219,3 +219,4 @@ local_attachments/
 old/
 test_local_knowledge.db
 refactor_workflow.py
+temp_import/

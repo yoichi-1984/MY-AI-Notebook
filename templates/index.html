@@ -2360,6 +2360,8 @@
                     if (currentFolderId) {
                         await fetchNotes();
                     }
+                } else if (data.type === 'folder_created') {
+                    await fetchFolders();
                 } else if (data.type === 'completed' || data.type === 'pending_review') {
                     if (data.error) {
                         showToast(`解析エラー: ${data.error}`, "error");

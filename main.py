@@ -4,6 +4,13 @@ import aiofiles
 from typing import Optional
 from pydantic import BaseModel, field_validator
 import re
+import warnings
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+    warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+except ImportError:
+    pass
+
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, WebSocket, WebSocketDisconnect, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -95,6 +102,14 @@ async def get_local_image(file_path: str):
     full_path = os.path.abspath(os.path.join(config.IMAGE_DIR, file_path))
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail="画像が見つかりません。")
+    return FileResponse(full_path)
+
+@app.get("/local_attachments/{file_path:path}")
+async def get_local_attachment(file_path: str):
+    from fastapi.responses import FileResponse
+    full_path = os.path.abspath(os.path.join(config.ATTACHMENT_DIR, file_path))
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="添付ファイルが見つかりません。")
     return FileResponse(full_path)
 
 import asyncio
