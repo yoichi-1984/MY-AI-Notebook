@@ -2320,7 +2320,8 @@
             const formData = new FormData();
             formData.append("image", file);
 
-            showToast("画像アップロード完了：AI解析を開始しました...", "info");
+            // Toastによる通知を削除（直後にタスクキューで表示されるため）
+            // showToast("画像アップロード完了：AI解析を開始しました...", "info");
 
             // 一時的にリスト上で処理中アイコンを出すため、仮でstatusを変更
             const noteIndex = notes.findIndex(n => n.id === currentNoteId);
@@ -2346,6 +2347,100 @@
             }
         }
 
+        let activeAiTasks = {};
+        
+        function updateAiTask(id, taskData) {
+            if (!activeAiTasks[id]) {
+                activeAiTasks[id] = { timestamp: Date.now(), ...taskData };
+            } else {
+                activeAiTasks[id] = { ...activeAiTasks[id], ...taskData };
+            }
+            renderAiTaskQueue();
+        }
+        
+        function removeAiTask(id, status = 'completed', messageOverride = null, delay = 5000) {
+            if (!activeAiTasks[id]) return;
+            activeAiTasks[id].status = status;
+            if (messageOverride) {
+                activeAiTasks[id].message = messageOverride;
+            }
+            renderAiTaskQueue();
+            setTimeout(() => {
+                delete activeAiTasks[id];
+                renderAiTaskQueue();
+            }, delay);
+        }
+        
+        function renderAiTaskQueue() {
+            const queuePanel = document.getElementById('aiTaskQueuePanel');
+            const toggleBtn = document.getElementById('aiTaskQueueToggleBtn');
+            const listEl = document.getElementById('aiTaskQueueList');
+            const badgeEl = document.getElementById('aiTaskQueueBadge');
+            
+            if (!queuePanel) return;
+            
+            const taskIds = Object.keys(activeAiTasks).sort((a,b) => activeAiTasks[b].timestamp - activeAiTasks[a].timestamp);
+            const activeCount = taskIds.filter(id => activeAiTasks[id].status === 'processing').length;
+            
+            if (taskIds.length === 0) {
+                queuePanel.classList.add('translate-y-full', 'opacity-0', 'pointer-events-none');
+                badgeEl.classList.add('hidden');
+                return;
+            }
+            
+            // Show panel if hidden
+            queuePanel.classList.remove('translate-y-full', 'opacity-0', 'pointer-events-none');
+            
+            if (activeCount > 0) {
+                badgeEl.innerText = activeCount;
+                badgeEl.classList.remove('hidden');
+            } else {
+                badgeEl.classList.add('hidden');
+            }
+            
+            listEl.innerHTML = '';
+            taskIds.forEach(id => {
+                const task = activeAiTasks[id];
+                let iconHtml = '';
+                let titleClass = 'text-slate-800 dark:text-slate-200';
+                
+                if (task.status === 'completed') {
+                    iconHtml = '<i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500"></i>';
+                    titleClass = 'text-slate-500 dark:text-slate-400 line-through';
+                } else if (task.status === 'failed') {
+                    iconHtml = '<i data-lucide="x-circle" class="w-4 h-4 text-rose-500"></i>';
+                } else if (task.status === 'pending_review') {
+                    iconHtml = '<i data-lucide="help-circle" class="w-4 h-4 text-yellow-500"></i>';
+                } else {
+                    iconHtml = '<i data-lucide="loader-2" class="w-4 h-4 text-indigo-500 animate-spin"></i>';
+                }
+                
+                const item = document.createElement('div');
+                item.className = 'flex items-start gap-3 p-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg transition-colors';
+                item.innerHTML = `
+                    <div class="mt-0.5 shrink-0">${iconHtml}</div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-medium ${titleClass} truncate">${task.title || '処理'}</div>
+                        <div class="text-xs text-slate-500 dark:text-slate-400 truncate">${task.message || '...'}</div>
+                    </div>
+                `;
+                listEl.appendChild(item);
+            });
+            lucide.createIcons();
+        }
+
+        function toggleAiTaskQueue() {
+            const listContainer = document.getElementById('aiTaskQueueListContainer');
+            const icon = document.getElementById('aiTaskQueueToggleIcon');
+            if (listContainer.classList.contains('hidden')) {
+                listContainer.classList.remove('hidden');
+                icon.style.transform = 'rotate(180deg)';
+            } else {
+                listContainer.classList.add('hidden');
+                icon.style.transform = 'rotate(0deg)';
+            }
+        }
+
         // WebSocket 初期化
         function initWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2355,17 +2450,32 @@
             
             ws.onmessage = async (event) => {
                 const data = JSON.parse(event.data);
+                const taskId = data.note_id ? (data.note_id + (data.page_id ? '-' + data.page_id : '')) : ('task-' + Date.now());
                 
-                if (data.type === 'import_progress') {
+                if (data.type === 'processing_started') {
+                    updateAiTask(taskId, {
+                        title: data.title,
+                        message: data.message,
+                        status: 'processing'
+                    });
+                } else if (data.type === 'import_progress') {
                     // ドキュメントインポートの進捗更新
                     const percent = Math.round((data.current / data.total) * 100);
+                    const progressMessage = `${data.message} (${percent}%)`;
+                    updateAiTask(taskId, {
+                        title: data.title || "ドキュメント インポート",
+                        message: progressMessage,
+                        status: 'processing'
+                    });
+                    
                     const noteObj = notes.find(n => n.id === data.note_id);
                     if (noteObj) {
-                        noteObj.ai_summary = `${data.message} (${percent}%)`;
+                        noteObj.ai_summary = progressMessage;
                         renderNotes();
                     }
                 } else if (data.type === 'failed') {
-                    showToast(`インポート失敗: 「${data.title}」n詳細: ${data.error}`, "error");
+                    removeAiTask(taskId, 'failed', `失敗: ${data.error}`);
+                    // showToast(`インポート失敗: 「${data.title}」n詳細: ${data.error}`, "error"); // 重複するため削除
                     if (currentFolderId) {
                         await fetchNotes();
                     }
@@ -2373,12 +2483,15 @@
                     await fetchFolders();
                 } else if (data.type === 'completed' || data.type === 'pending_review') {
                     if (data.error) {
-                        showToast(`解析エラー: ${data.error}`, "error");
+                        removeAiTask(taskId, 'failed', `エラー: ${data.error}`);
+                        // showToast(`解析エラー: ${data.error}`, "error"); // 重複するため削除
                     } else {
                         if (data.type === 'completed') {
-                            showToast(data.message || `自動分類完了: 「${data.title}」`, "success");
+                            removeAiTask(taskId, 'completed', data.message || `完了`);
+                            // showToast(data.message || `自動分類完了: 「${data.title}」`, "success"); // 重複するため削除
                         } else {
-                            showToast(`仕分け保留: 「${data.title}」の配置を指定してください`, "warning");
+                            removeAiTask(taskId, 'pending_review', `仕分け保留: 配置を指定してください`, 10000);
+                            // showToast(`仕分け保留: 「${data.title}」の配置を指定してください`, "warning"); // 重複するため削除
                         }
                     }
                     
@@ -2403,7 +2516,8 @@
                     }
                     updateInboxBadge();
                 } else if (data.type === 'offline_queued') {
-                    showToast(data.message || `オフラインのため保留キューに登録しました`, "info");
+                    removeAiTask(taskId, 'pending_review', `オフラインのため処理保留`, 10000);
+                    // showToast(data.message || `オフラインのため保留キューに登録しました`, "info"); // 重複するため削除
                     if (currentFolderId === 'inbox' || currentFolderId === data.folder_id) {
                         await fetchNotes();
                     }
@@ -3754,7 +3868,28 @@
                     キャンセル
                 </button>
             </div>
+            </div>
         </div>
     </div>
+
+    <!-- AI作業キュー（フローティングパネル） -->
+    <div id="aiTaskQueuePanel" class="fixed bottom-4 right-4 z-50 w-80 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl transition-all duration-300 translate-y-full opacity-0 pointer-events-none flex flex-col overflow-hidden">
+        <div class="flex items-center justify-between p-3 border-b border-slate-200/50 dark:border-slate-800/50 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors pointer-events-auto" onclick="toggleAiTaskQueue()" id="aiTaskQueueToggleBtn">
+            <div class="flex items-center gap-2">
+                <div class="p-1.5 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-lg">
+                    <i data-lucide="cpu" class="w-4 h-4"></i>
+                </div>
+                <span class="text-sm font-semibold text-slate-800 dark:text-slate-200">AI処理キュー</span>
+                <span id="aiTaskQueueBadge" class="hidden ml-1 px-1.5 py-0.5 text-[10px] font-bold bg-indigo-500 text-white rounded-full"></span>
+            </div>
+            <i data-lucide="chevron-up" id="aiTaskQueueToggleIcon" class="w-4 h-4 text-slate-500 transition-transform duration-300 transform rotate-180"></i>
+        </div>
+        <div id="aiTaskQueueListContainer" class="pointer-events-auto">
+            <div id="aiTaskQueueList" class="max-h-64 overflow-y-auto p-2 space-y-1">
+                <!-- Tasks will be injected here -->
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

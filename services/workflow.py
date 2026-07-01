@@ -107,6 +107,15 @@ async def async_pipeline_workflow(note_id: str, page_id: str = None, skip_classi
                 print(f"Error: Page {page_id} not found in note {note_id}.")
                 return
 
+        # --- 開始通知ブロードキャスト ---
+        await broadcast_ws_message({
+            "type": "processing_started",
+            "note_id": note_id,
+            "page_id": page_id,
+            "title": note.get("title") or "無題のノート",
+            "message": "AI解析・自動仕分け中..."
+        })
+
         # 2. コンテキスト収集
         # 既存フォルダ一覧
         folders = sqlite_client.get_folders()
@@ -415,6 +424,15 @@ async def process_new_image_workflow(note_id: str, page_id: str, image_id: str):
         if not target_image:
             print(f"Error: Image {image_id} not found in page {page_id}.")
             return
+
+        # --- 開始通知ブロードキャスト ---
+        await broadcast_ws_message({
+            "type": "processing_started",
+            "note_id": note_id,
+            "page_id": page_id,
+            "title": note.get("title") or "無題のノート",
+            "message": "画像OCR・再構造化中..."
+        })
 
         # 2. 画像のロード
         image_bytes = None
@@ -946,6 +964,15 @@ async def process_attachment_ai_workflow(attachment_id: str):
         if not note:
             print(f"Error: Parent note {note_id} not found.")
             return
+
+        # --- 開始通知ブロードキャスト ---
+        await broadcast_ws_message({
+            "type": "processing_started",
+            "note_id": note_id,
+            "page_id": page_id,
+            "title": attachment["file_name"],
+            "message": "添付ファイル解析中..."
+        })
 
         physical_path = os.path.abspath(os.path.join(config.STORAGE_BASE, attachment["file_path"]))
         if not os.path.exists(physical_path):
