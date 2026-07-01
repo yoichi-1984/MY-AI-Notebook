@@ -2,12 +2,26 @@ import os
 import lancedb
 import pyarrow as pa
 import threading
+import time
 import config
 
 _db = None
 _table = None
 _db_lock = threading.Lock()
 TABLE_NAME = "knowledge_vector_table_v3"
+
+def _safe_create_fts_index(table, max_retries=3):
+    """FTSインデックス作成をリトライ付きで実行する（Windowsのファイルロック対策）"""
+    for attempt in range(max_retries):
+        try:
+            table.create_fts_index("fts_text", replace=True)
+            return
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Warning: FTS index creation failed (attempt {attempt+1}/{max_retries}): {e}. Retrying in 1s...")
+                time.sleep(1)
+            else:
+                raise e
 
 def reset_connection():
     global _db, _table
@@ -63,9 +77,9 @@ def upsert_vector_data_chunks(source_id: str, note_id: str, chunks_data: list[di
         
         # 全文検索 (FTS) インデックスの再構築
         try:
-            table.create_fts_index("fts_text", replace=True)
+            _safe_create_fts_index(table)
         except Exception as e:
-            print(f"Warning: Failed to create FTS index: {e}. Keyword search will fallback to memory matching.")
+            print(f"Warning: Failed to create FTS index after retries: {e}. Keyword search will fallback to memory matching.")
 
 def delete_vector_data(source_id: str):
     table = get_table()
@@ -74,7 +88,7 @@ def delete_vector_data(source_id: str):
             table.delete(f"source_id = '{source_id}'")
             # インデックス再構築
             try:
-                table.create_fts_index("fts_text", replace=True)
+                _safe_create_fts_index(table)
             except Exception:
                 pass
         except Exception as e:
@@ -86,7 +100,7 @@ def delete_all_vector_data_for_note(note_id: str):
         try:
             table.delete(f"note_id = '{note_id}'")
             try:
-                table.create_fts_index("fts_text", replace=True)
+                _safe_create_fts_index(table)
             except Exception:
                 pass
         except Exception as e:

@@ -357,7 +357,40 @@ def create_note_in_folder(folder_id: str, note_data: NoteCreate):
     page_id = sqlite_client.create_manual_note(note_id, folder_id, note_data.title.strip() or "無題のノート")
     return {"note_id": note_id, "page_id": page_id}
 
+# -----------------------------------------------------
+# 順序変更 API (優先してマッチさせるため上部に配置)
+# -----------------------------------------------------
+
+# ページ順序変更 API
+class PagesReorder(BaseModel):
+    page_ids: list[str]
+
+@app.put("/api/notes/{note_id}/pages/reorder")
+def reorder_pages(note_id: str, reorder_data: PagesReorder):
+    sqlite_client.reorder_pages(note_id, reorder_data.page_ids)
+    return {"status": "reordered", "note_id": note_id}
+
+# フォルダ順序変更 API
+class FoldersReorder(BaseModel):
+    folder_ids: list[str]
+
+@app.put("/api/folders/reorder")
+def reorder_folders(reorder_data: FoldersReorder):
+    sqlite_client.reorder_folders(reorder_data.folder_ids)
+    return {"status": "reordered"}
+
+# ノート順序変更 API
+class NotesReorder(BaseModel):
+    note_ids: list[str]
+
+@app.put("/api/folders/{folder_id}/notes/reorder")
+def reorder_notes(folder_id: str, reorder_data: NotesReorder):
+    sqlite_client.reorder_notes(folder_id, reorder_data.note_ids)
+    return {"status": "reordered", "folder_id": folder_id}
+
+# -----------------------------------------------------
 # フォルダ更新スキーマ
+
 class FolderUpdate(BaseModel):
     name: str
 
@@ -852,32 +885,7 @@ def delete_page(note_id: str, page_id: str):
     lance_client.delete_vector_data(page_id)
     return {"status": "deleted", "note_id": note_id, "page_id": page_id}
 
-# ページ順序変更 API
-class PagesReorder(BaseModel):
-    page_ids: list[str]
 
-@app.put("/api/notes/{note_id}/pages/reorder")
-def reorder_pages(note_id: str, reorder_data: PagesReorder):
-    sqlite_client.reorder_pages(note_id, reorder_data.page_ids)
-    return {"status": "reordered", "note_id": note_id}
-
-# フォルダ順序変更 API
-class FoldersReorder(BaseModel):
-    folder_ids: list[str]
-
-@app.put("/api/folders/reorder")
-def reorder_folders(reorder_data: FoldersReorder):
-    sqlite_client.reorder_folders(reorder_data.folder_ids)
-    return {"status": "reordered"}
-
-# ノート順序変更 API
-class NotesReorder(BaseModel):
-    note_ids: list[str]
-
-@app.put("/api/folders/{folder_id}/notes/reorder")
-def reorder_notes(folder_id: str, reorder_data: NotesReorder):
-    sqlite_client.reorder_notes(folder_id, reorder_data.note_ids)
-    return {"status": "reordered", "folder_id": folder_id}
 
 
 # フォルダ修正スキーマ

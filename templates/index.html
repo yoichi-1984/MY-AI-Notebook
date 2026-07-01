@@ -1660,7 +1660,7 @@
             
             try {
                 // notes テーブルメタデータ更新
-                await fetch(`/api/notes/${currentNoteId}`, {
+                const metaRes = await fetch(`/api/notes/${currentNoteId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1672,6 +1672,13 @@
                         reference_urls: reference_urls
                     })
                 });
+                if (!metaRes.ok) {
+                    const errData = await metaRes.json().catch(() => ({}));
+                    console.error("Note metadata save failed:", metaRes.status, errData);
+                    if (showToastFlag) {
+                        showToast(errData.detail || `ノートメタデータの保存に失敗しました (HTTP ${metaRes.status})`, "error");
+                    }
+                }
             } catch (e) {
                 console.error("Note title save failed:", e);
             }
@@ -1960,11 +1967,12 @@
 
                 try {
                     const orderIds = folderListExceptInbox.map(f => f.id);
-                    await fetch('/api/folders/reorder', {
+                    const res = await fetch('/api/folders/reorder', {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ folder_ids: orderIds })
                     });
+                    if (!res.ok) throw new Error("Server returned " + res.status);
                     showToast("フォルダの並び順を保存しました", "success");
                 } catch (err) {
                     console.error("Failed to reorder folders:", err);
@@ -2048,11 +2056,12 @@
 
             try {
                 const orderIds = notes.map(n => n.id);
-                await fetch(`/api/folders/${currentFolderId}/notes/reorder`, {
+                const res = await fetch(`/api/folders/${currentFolderId}/notes/reorder`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ note_ids: orderIds })
                 });
+                if (!res.ok) throw new Error("Server returned " + res.status);
                 showToast("ノートの並び順を保存しました", "success");
             } catch (err) {
                 console.error("Failed to reorder notes:", err);
@@ -3506,6 +3515,10 @@
         async function browseStoragePath() {
             try {
                 const res = await fetch('/api/system/select_directory');
+                if (!res.ok) {
+                    showToast(`フォルダ選択APIの呼び出しに失敗しました (HTTP ${res.status})`, "error");
+                    return;
+                }
                 const data = await res.json();
                 if (data.path) {
                     document.getElementById('settingStoragePath').value = data.path;
@@ -3536,6 +3549,11 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({new_path: newPath})
                 });
+                if (!checkRes.ok) {
+                    const errData = await checkRes.json().catch(() => ({}));
+                    showToast(errData.detail || `パスの確認中にエラーが発生しました (HTTP ${checkRes.status})`, "error");
+                    return;
+                }
                 const checkData = await checkRes.json();
                 
                 if (!checkData.is_valid) {
